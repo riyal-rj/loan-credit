@@ -22,6 +22,7 @@ and worker boot paths, and Compose/CI foundation.
 | Dependency audit | `uv run pip-audit --skip-editable` | No known vulnerabilities |
 | Runtime smoke (API) | `uv run uvicorn apps.api.main:app` + curl | `/health/live`→200, `/health/ready`→200 (secret_provider check healthy), `/metrics`→200 with `finassist_http_requests_total` present |
 | Runtime smoke (worker) | `uv run python -m apps.worker.main` | Boots, logs `worker.startup.complete`, heartbeat fires, own `/health/live`→200, structured JSON/console logs and OTel spans confirmed end-to-end (uvicorn's own logger output is captured through the same structlog pipeline) |
+| Container build + run | `docker compose --profile core build && docker compose --profile core up -d` | Both images build; both containers reach `Up ... (healthy)`; `/health/ready` (api, :8000) and `/health/live` (worker, :8001) verified from the host against the running containers |
 
 Dependency versions were bumped during this phase specifically because `pip-audit` found real,
 currently-known CVEs in the initially-pinned `starlette` (pulled transitively by an older FastAPI
@@ -30,12 +31,19 @@ pin) and `pytest`; both were upgraded to patched major versions (FastAPI 0.141.x
 
 ## Known limitations / accepted at this phase
 
-- **Docker image build/run was not verified in this session** — Docker Desktop was not running
-  in this environment and did not come up after being launched (waited ~2 minutes). The
-  `Dockerfile`/`Dockerfile.worker`/`compose.yaml` are written and reviewed but not yet proven by
-  an actual build. **Action for the user:** once Docker Desktop is running, run
-  `docker compose --profile core up --build` and confirm both healthchecks go green; report back
-  if the build fails so it can be fixed before Phase 1B.
+- **Docker verification was initially blocked, then completed.** Docker Desktop's WSL2 backend
+  had a stale/broken `docker-desktop` distro registration on this machine (its disk image at
+  `...\Docker\wsl\main\ext4.vhdx` was missing, unrelated to this project). Fixed by
+  `wsl --unregister docker-desktop` followed by a clean Docker Desktop restart, which let it
+  recreate the distro. Building then surfaced two real image-packaging bugs, now fixed in
+  `Dockerfile`/`Dockerfile.worker`: the builder stage used `WORKDIR /build` while the runtime
+  stage used `WORKDIR /app`, and `uv` bakes the venv's absolute build path into the `uvicorn`
+  console-script shebang and into this project's editable install -- copying the venv to a
+  different path broke both (`exec .../uvicorn: no such file or directory` on the API image,
+  `ModuleNotFoundError: No module named 'finassist'` on the worker image). Fix: align both
+  stages' `WORKDIR` to `/app`, and pass `--no-editable` to the final `uv sync` so `finassist` is
+  installed as a normal package rather than a path reference back to the builder stage. Both
+  images now build clean and both containers reach `Up ... (healthy)`, verified above.
 - One accepted, tracked warning: Starlette 1.6.0's `TestClient` emits a
   `StarletteDeprecationWarning` recommending an `httpx2` package as an `httpx` replacement for
   `starlette.testclient`. `httpx2` is not yet an established, widely-adopted release as of this

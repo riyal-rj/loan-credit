@@ -5,7 +5,10 @@
 
 FROM python:3.11-slim AS builder
 COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /bin/
-WORKDIR /build
+# Builder WORKDIR must match the runtime stage's WORKDIR (/app): uv bakes the venv's absolute
+# path into console-script shebangs and into the editable install of this project, so a
+# mismatched path here breaks both at runtime (see Dockerfile for the API image's write-up).
+WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock* ./
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -14,15 +17,15 @@ COPY src ./src
 COPY apps ./apps
 COPY README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev || uv sync --no-dev
+    uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable
 
 FROM python:3.11-slim AS runtime
 RUN groupadd --system --gid 10001 finassist \
     && useradd --system --uid 10001 --gid finassist --no-create-home finassist
 WORKDIR /app
-COPY --from=builder --chown=finassist:finassist /build/.venv /app/.venv
-COPY --from=builder --chown=finassist:finassist /build/src /app/src
-COPY --from=builder --chown=finassist:finassist /build/apps /app/apps
+COPY --from=builder --chown=finassist:finassist /app/.venv /app/.venv
+COPY --from=builder --chown=finassist:finassist /app/src /app/src
+COPY --from=builder --chown=finassist:finassist /app/apps /app/apps
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
