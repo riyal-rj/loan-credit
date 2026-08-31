@@ -21,6 +21,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "asyncpg>=0.30,<0.31",
     "alembic>=1.14,<2.0",
+    "aioboto3>=15.0,<16.0",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +38,7 @@ dev = [
     "pre-commit>=4.0,<5.0",
     "hypothesis>=6.115,<7.0",
     "testcontainers[postgres]>=4.8,<5.0",
+    "minio>=7.2,<8.0",
 ]
 
 [build-system]
@@ -69,6 +71,10 @@ exclude = ["^tests/"]
 
 [[tool.mypy.overrides]]
 module = "asgi_correlation_id.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aioboto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

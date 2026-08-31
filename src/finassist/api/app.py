@@ -39,6 +39,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         container = build_container(settings)
+        try:
+            await container.object_store.ensure_ready()
+        except Exception as exc:  # noqa: BLE001 - startup must not crash-loop on a slow/unavailable dependency
+            logger.warning("api.object_store_ensure_ready_failed", error=str(exc))
         app.state.container = container
         app.include_router(build_health_router(container))
         logger.info("api.startup.complete")

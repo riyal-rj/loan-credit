@@ -15,7 +15,9 @@ class _ExampleNotFoundError(DomainError):
 
 
 def _app_with_test_route() -> FastAPI:
-    settings = Settings(environment="local", log_format="console")
+    settings = Settings(
+        environment="local", log_format="console", object_store_request_timeout_seconds=0.1
+    )
     app = create_app(settings)
 
     @app.get("/__test/domain-error")
@@ -54,7 +56,9 @@ def test_unexpected_error_never_leaks_internal_message() -> None:
 
 
 def test_validation_error_returns_field_level_detail() -> None:
-    settings = Settings(environment="local", log_format="console")
+    settings = Settings(
+        environment="local", log_format="console", object_store_request_timeout_seconds=0.1
+    )
     app = create_app(settings)
 
     @app.get("/__test/validated")
@@ -71,7 +75,12 @@ def test_validation_error_returns_field_level_detail() -> None:
 
 
 def test_oversized_request_body_is_rejected() -> None:
-    settings = Settings(environment="local", log_format="console", request_body_max_bytes=1024)
+    settings = Settings(
+        environment="local",
+        log_format="console",
+        request_body_max_bytes=1024,
+        object_store_request_timeout_seconds=0.1,
+    )
     app = create_app(settings)
 
     @app.post("/__test/upload")

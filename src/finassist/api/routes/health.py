@@ -53,9 +53,14 @@ async def _check_postgres(container: Container) -> None:
     await check_connectivity(container.engine)
 
 
+async def _check_object_store(container: Container) -> None:
+    await container.object_store.check_connectivity()
+
+
 READINESS_CHECKS: list[ReadinessCheck] = [
     ReadinessCheck(name="secret_provider", check=_check_secret_provider),
     ReadinessCheck(name="postgres", check=_check_postgres),
+    ReadinessCheck(name="object_store", check=_check_object_store),
 ]
 
 

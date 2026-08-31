@@ -5,14 +5,24 @@ UV := uv
 sync:
 	$(UV) sync --all-extras
 
+MOCK_SERVICES := mock-kyc mock-bureau mock-employer mock-core-banking mock-los
+
 lint:
-	$(UV) run ruff check src apps tests
+	$(UV) run ruff check src apps tests services
 
 format:
-	$(UV) run ruff format src apps tests
+	$(UV) run ruff format src apps tests services
 
+# services/mock-*/main.py are standalone scripts in hyphenated directories (not valid Python
+# package names, matching the master instruction's repo tree literally) -- each is checked in its
+# own mypy invocation via --explicit-package-bases to avoid a "Duplicate module named main" error;
+# services/synthetic_data and services/common are proper packages, checked together via -p.
 typecheck:
 	$(UV) run mypy src apps
+	MYPYPATH=. $(UV) run mypy --explicit-package-bases -p services.synthetic_data -p services.common
+	for svc in $(MOCK_SERVICES); do \
+		MYPYPATH=. $(UV) run mypy --explicit-package-bases services/$$svc/main.py || exit 1; \
+	done
 
 test:
 	rm -f .coverage
@@ -35,7 +45,7 @@ migrate:
 	$(UV) run alembic upgrade head
 
 security:
-	$(UV) run bandit -q -r src apps -c pyproject.toml
+	$(UV) run bandit -q -r src apps services -c pyproject.toml
 	$(UV) run pip-audit --skip-editable
 
 import-lint:

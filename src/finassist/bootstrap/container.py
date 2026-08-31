@@ -11,15 +11,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import aioboto3
 from opentelemetry.sdk.trace import TracerProvider
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from finassist.application.ports.id_generator import IdGenerator, UuidIdGenerator
+from finassist.application.ports.object_store import ObjectStore
 from finassist.application.ports.unit_of_work import UnitOfWorkFactory
 from finassist.bootstrap.logging import configure_logging, get_logger
 from finassist.bootstrap.settings import Environment, SecretProviderKind, Settings, get_settings
 from finassist.bootstrap.telemetry import configure_telemetry, shutdown_telemetry
 from finassist.domain.shared.clock import Clock, SystemClock
+from finassist.infrastructure.object_store.minio_client import S3ObjectStore
 from finassist.infrastructure.postgres.database import build_engine, build_session_factory
 from finassist.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from finassist.security.env_secret_provider import EnvSecretProvider
@@ -49,6 +52,7 @@ class Container:
     clock: Clock
     id_generator: IdGenerator
     uow_factory: UnitOfWorkFactory
+    object_store: ObjectStore
 
 
 def _build_secret_provider(settings: Settings) -> SecretProvider:
@@ -104,6 +108,16 @@ def build_container(settings: Settings | None = None) -> Container:
     uow_factory = SqlAlchemyUnitOfWorkFactory(
         session_factory, clock=clock, id_generator=id_generator
     )
+    object_store = S3ObjectStore(
+        aioboto3.Session(
+            aws_access_key_id=resolved_settings.object_store_access_key,
+            aws_secret_access_key=resolved_settings.object_store_secret_key,
+        ),
+        endpoint_url=resolved_settings.object_store_endpoint_url,
+        bucket=resolved_settings.object_store_bucket,
+        use_ssl=resolved_settings.object_store_use_ssl,
+        request_timeout_seconds=resolved_settings.object_store_request_timeout_seconds,
+    )
 
     container = Container(
         settings=resolved_settings,
@@ -115,6 +129,7 @@ def build_container(settings: Settings | None = None) -> Container:
         clock=clock,
         id_generator=id_generator,
         uow_factory=uow_factory,
+        object_store=object_store,
     )
 
     logger.info("container.build.complete")

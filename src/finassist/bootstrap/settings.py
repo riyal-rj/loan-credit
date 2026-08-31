@@ -42,6 +42,7 @@ _DEFAULT_LOCAL_DATABASE_URL = (
 _DEFAULT_LOCAL_MIGRATION_DATABASE_URL = (
     "postgresql+asyncpg://finassist:finassist@localhost:5433/finassist"
 )
+_DEFAULT_LOCAL_OBJECT_STORE_SECRET_KEY = "finassist_minio_secret"  # noqa: S105 # nosec B105
 
 
 class Settings(BaseSettings):
@@ -102,6 +103,16 @@ class Settings(BaseSettings):
     database_pool_max_size: int = Field(default=10, ge=1)
     database_statement_timeout_seconds: float = Field(default=10.0, gt=0)
 
+    # Local-dev-only default (docker compose's minio service uses the same values). Phase 9
+    # replaces the static access/secret key pair with OpenBao-issued credentials, same pattern as
+    # the database settings above.
+    object_store_endpoint_url: str = "http://localhost:9000"
+    object_store_access_key: str = "finassist"
+    object_store_secret_key: str = _DEFAULT_LOCAL_OBJECT_STORE_SECRET_KEY
+    object_store_bucket: str = "finassist-documents"
+    object_store_use_ssl: bool = False
+    object_store_request_timeout_seconds: float = Field(default=5.0, gt=0)
+
     @model_validator(mode="after")
     def _validate_production_constraints(self) -> Settings:
         """Fail fast on configuration that is acceptable in dev but unsafe in production.
@@ -132,6 +143,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "environment=production must not use the local-dev default "
                     "database_migration_url"
+                )
+            if self.object_store_secret_key == _DEFAULT_LOCAL_OBJECT_STORE_SECRET_KEY:
+                raise ValueError(
+                    "environment=production must not use the local-dev default "
+                    "object_store_secret_key"
                 )
         return self
 

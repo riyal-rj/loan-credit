@@ -1,15 +1,18 @@
 # Local development environment.
 #
-# The `core` profile now covers API + worker + PostgreSQL, because Phase 1B wired real domain
-# persistence. Valkey/Qdrant/Kafka/Temporal/Keycloak/OPA/OpenBao/observability integrations are
-# still not wired into the application (see docs/architecture/phase-0-assessment.md §5 for the
-# phase-to-file mapping) -- adding a service here before the code that talks to it exists would be
-# exactly the "untested configuration" §28 rejects. Each additional profile from the master
-# instruction (`workflow`, `events`, `observability`, `security`, `local-models`,
-# `hosted-models`, `full`) is added in the phase that also delivers the corresponding application
-# wiring, as a new profile block appended below -- never as a placeholder.
+# The `core` profile now covers API + worker + PostgreSQL + MinIO, because Phase 1B/2 wired real
+# domain persistence and the object-storage document lifecycle. `synthetic-systems` (Phase 2) adds
+# the mock LOS/KYC/bureau/employer/core-banking services. Valkey/Qdrant/Kafka/Temporal/Keycloak/
+# OPA/OpenBao/observability integrations are still not wired into the application (see
+# docs/architecture/phase-0-assessment.md §5 for the phase-to-file mapping) -- adding a service
+# here before the code that talks to it exists would be exactly the "untested configuration" §28
+# rejects. Each additional profile from the master instruction (`workflow`, `events`,
+# `observability`, `security`, `local-models`, `hosted-models`) is added in the phase that also
+# delivers the corresponding application wiring, as a new profile block appended below -- never as
+# a placeholder. `full` includes everything defined so far.
 #
 # Run: docker compose --profile core up --build
+# Run: docker compose --profile full up --build   # core + the synthetic mock services
 
 services:
   postgres:
@@ -28,6 +31,25 @@ services:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U finassist -d finassist"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    profiles: ["core", "full"]
+    environment:
+      MINIO_ROOT_USER: finassist
+      MINIO_ROOT_PASSWORD: finassist_minio_secret
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -63,9 +85,14 @@ services:
       FINASSIST_HTTP_HOST: 0.0.0.0
       FINASSIST_HTTP_PORT: "8000"
       FINASSIST_DATABASE_URL: postgresql+asyncpg://finassist_app:finassist_app@postgres:5432/finassist
+      FINASSIST_OBJECT_STORE_ENDPOINT_URL: http://minio:9000
+      FINASSIST_OBJECT_STORE_ACCESS_KEY: finassist
+      FINASSIST_OBJECT_STORE_SECRET_KEY: finassist_minio_secret
     depends_on:
       migrate:
         condition: service_completed_successfully
+      minio:
+        condition: service_healthy
     ports:
       - "8000:8000"
     healthcheck:
@@ -113,5 +140,86 @@ services:
     cap_drop:
       - ALL
 
+  mock-kyc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["synthetic-systems", "full"]
+    entrypoint: ["python", "services/mock-kyc/main.py"]
+    ports:
+      - "9101:9101"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9101/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  mock-bureau:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["synthetic-systems", "full"]
+    entrypoint: ["python", "services/mock-bureau/main.py"]
+    ports:
+      - "9102:9102"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9102/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  mock-employer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["synthetic-systems", "full"]
+    entrypoint: ["python", "services/mock-employer/main.py"]
+    ports:
+      - "9103:9103"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9103/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  mock-core-banking:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["synthetic-systems", "full"]
+    entrypoint: ["python", "services/mock-core-banking/main.py"]
+    ports:
+      - "9104:9104"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9104/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  mock-los:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["synthetic-systems", "full"]
+    entrypoint: ["python", "services/mock-los/main.py"]
+    ports:
+      - "9105:9105"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9105/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
 volumes:
   postgres-data:
+  minio-data:
