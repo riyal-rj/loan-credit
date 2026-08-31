@@ -20,13 +20,17 @@ def test_liveness_returns_alive() -> None:
     assert response.json() == {"status": "alive"}
 
 
-def test_readiness_returns_200_when_all_checks_pass() -> None:
+def test_readiness_reports_secret_provider_and_postgres_checks() -> None:
+    # No live Postgres in a pure unit-test run, so this only asserts the registry/response shape
+    # (both checks present, secret_provider healthy). The "all healthy, 200" path is covered by
+    # tests/integration/test_health_readiness.py against a real Postgres container.
     with _client() as client:
         response = client.get("/health/ready")
 
     body = response.json()
-    assert response.status_code == 200
-    assert body["status"] == "ready"
+    assert response.status_code in (200, 503)
+    check_names = {check["name"] for check in body["checks"]}
+    assert check_names == {"secret_provider", "postgres"}
     assert any(check["name"] == "secret_provider" and check["healthy"] for check in body["checks"])
 
 

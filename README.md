@@ -6,12 +6,15 @@ repository assessment, confirmed scope/assumptions, target architecture, technol
 matrix, phased plan, and Phase 0/1A acceptance criteria. Design decisions are recorded as ADRs in
 [docs/adr/](docs/adr/).
 
-**Status: Phase 0 (architecture baseline) and Phase 1A (production foundation) are implemented.**
-Everything else in the master instruction (domain persistence, synthetic ecosystem, Temporal
-workflows, document intelligence, policy/affordability engines, retrieval/agents, human review,
-full observability, security hardening, Kubernetes/GitOps) is scoped to later phases per the plan
-in the Phase 0 document — none of it is claimed as done. See that document for the phase-by-phase
-mapping.
+**Status: Phase 0 (architecture baseline), Phase 1A (production foundation), and Phase 1B
+(domain and persistence foundation) are implemented.** Everything else in the master instruction
+(synthetic ecosystem, Temporal workflows, document intelligence, policy/affordability engines,
+retrieval/agents, human review, full observability, security hardening, Kubernetes/GitOps) is
+scoped to later phases per the plan in the Phase 0 document — none of it is claimed as done. See
+[docs/architecture/phase-1b-completion.md](docs/architecture/phase-1b-completion.md) for what
+Phase 1B added, the evidence it passed on, and the real bugs (RLS silently bypassed for
+superusers, timezone-naive ORM columns, a password-masking bug in a test helper) it caught and
+fixed along the way.
 
 ## What exists right now
 
@@ -34,24 +37,41 @@ mapping.
 - A worker process (`apps/worker/main.py`) with its own liveness endpoint, heartbeat loop, and
   graceful shutdown — Temporal wiring lands in Phase 3.
 - A non-root, multi-stage, read-only-root-filesystem container image for each process.
-- `docker compose --profile core` for local API+worker.
+- `docker compose --profile core` for local API + worker + PostgreSQL + a one-shot migration job.
 - Lint/type/test/security/import-direction gates wired into a single `make ci` target
-  (docs/adr/0004).
+  (docs/adr/0004); `make ci-full` adds the Docker-dependent integration suite and the combined
+  coverage gate (docs/architecture/phase-1b-completion.md).
+- The `applications` bounded context end to end: domain aggregate + 15-state machine
+  (`finassist.domain.applications`), command handlers for create/submit
+  (`finassist.application.commands`), a PostgreSQL schema with row-level-security tenant
+  isolation, an outbox + hash-chained append-only audit log, and idempotency-key-protected
+  commands (`finassist.infrastructure.postgres`, `migrations/versions/0001_initial_schema.py`,
+  docs/adr/0009).
 
 ## Quickstart (Windows PowerShell or POSIX shell)
 
 ```bash
 cp .env.example .env
 uv sync --all-extras
-make ci
-make run-api      # http://localhost:8000/docs, /health/live, /health/ready, /metrics
-make run-worker    # in a second terminal; http://localhost:8001/health/live
+make ci                # lint, types, import direction, unit+property tests, security scans
+make migrate           # apply the Postgres schema (needs `docker compose up postgres` first)
+make run-api           # http://localhost:8000/docs, /health/live, /health/ready, /metrics
+make run-worker        # in a second terminal; http://localhost:8001/health/live
 ```
 
-Or via Compose:
+Or via Compose (brings up Postgres, runs the migration, then starts the API and worker):
 
 ```bash
 docker compose --profile core up --build
+```
+
+Postgres is published on host port **5433** (not 5432) so it doesn't collide with a Postgres you
+may already be running locally; see `.env.example`.
+
+Integration tests need Docker (they spin up a disposable Postgres via testcontainers):
+
+```bash
+make test-integration   # or: make ci-full for the combined unit+integration+coverage gate
 ```
 
 ## Repository layout
@@ -61,8 +81,9 @@ See `docs/architecture/phase-0-assessment.md` §3/§5 for the full rationale. To
 - `src/finassist/` — application code (domain, application, infrastructure, ai, api, security,
   observability, bootstrap)
 - `apps/` — process entrypoints (api, worker, web)
+- `migrations/` — Alembic migrations (`versions/0001_initial_schema.py` is the Phase 1B schema)
 - `services/` — synthetic enterprise systems (mock LOS/KYC/bureau/employer/core-banking) — Phase 2
-- `tests/` — unit, property, integration, contract, workflow, e2e, security, performance,
-  evaluation
+- `tests/` — unit, property, integration (needs Docker), contract, workflow, e2e, security,
+  performance, evaluation
 - `infra/` — compose, kubernetes, helm, opentofu, gitops, observability, keycloak, opa, openbao
 - `docs/` — architecture, ADRs, API, threat model, runbooks, operations

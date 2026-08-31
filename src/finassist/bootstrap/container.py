@@ -12,10 +12,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from opentelemetry.sdk.trace import TracerProvider
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from finassist.application.ports.id_generator import IdGenerator, UuidIdGenerator
+from finassist.application.ports.unit_of_work import UnitOfWorkFactory
 from finassist.bootstrap.logging import configure_logging, get_logger
 from finassist.bootstrap.settings import Environment, SecretProviderKind, Settings, get_settings
 from finassist.bootstrap.telemetry import configure_telemetry, shutdown_telemetry
+from finassist.domain.shared.clock import Clock, SystemClock
+from finassist.infrastructure.postgres.database import build_engine, build_session_factory
+from finassist.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from finassist.security.env_secret_provider import EnvSecretProvider
 from finassist.security.ports import AuthorizationProvider, SecretProvider
 
@@ -38,6 +44,11 @@ class Container:
     secret_provider: SecretProvider
     authorization_provider: AuthorizationProvider
     tracer_provider: TracerProvider
+    engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession]
+    clock: Clock
+    id_generator: IdGenerator
+    uow_factory: UnitOfWorkFactory
 
 
 def _build_secret_provider(settings: Settings) -> SecretProvider:
@@ -86,20 +97,34 @@ def build_container(settings: Settings | None = None) -> Container:
     secret_provider = _build_secret_provider(resolved_settings)
     authorization_provider = _build_authorization_provider(resolved_settings)
 
+    engine = build_engine(resolved_settings)
+    session_factory = build_session_factory(engine)
+    clock = SystemClock()
+    id_generator = UuidIdGenerator()
+    uow_factory = SqlAlchemyUnitOfWorkFactory(
+        session_factory, clock=clock, id_generator=id_generator
+    )
+
     container = Container(
         settings=resolved_settings,
         secret_provider=secret_provider,
         authorization_provider=authorization_provider,
         tracer_provider=tracer_provider,
+        engine=engine,
+        session_factory=session_factory,
+        clock=clock,
+        id_generator=id_generator,
+        uow_factory=uow_factory,
     )
 
     logger.info("container.build.complete")
     return container
 
 
-def shutdown_container(container: Container) -> None:
+async def shutdown_container(container: Container) -> None:
     """Release process-wide resources held by ``container``. Call during graceful shutdown."""
     logger = get_logger(__name__)
     logger.info("container.shutdown.start")
+    await container.engine.dispose()
     shutdown_telemetry()
     logger.info("container.shutdown.complete")

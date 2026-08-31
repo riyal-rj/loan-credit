@@ -36,6 +36,14 @@ class SecretProviderKind(StrEnum):
     OPENBAO = "openbao"
 
 
+_DEFAULT_LOCAL_DATABASE_URL = (
+    "postgresql+asyncpg://finassist_app:finassist_app@localhost:5433/finassist"
+)
+_DEFAULT_LOCAL_MIGRATION_DATABASE_URL = (
+    "postgresql+asyncpg://finassist:finassist@localhost:5433/finassist"
+)
+
+
 class Settings(BaseSettings):
     """Process-wide validated configuration.
 
@@ -77,6 +85,23 @@ class Settings(BaseSettings):
 
     request_body_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
 
+    # Local-dev-only default credential (docker compose's postgres service uses the same value).
+    # Never a real secret: Phase 9 replaces this with OpenBao-issued dynamic credentials injected
+    # at deploy time (docs/adr/0009), at which point this default is removed, not overridden.
+    #
+    # `database_url` is the low-privilege, non-superuser role the *application* connects as --
+    # required for row-level security to apply at all (PostgreSQL exempts superusers from RLS
+    # even with FORCE ROW LEVEL SECURITY, which this project's own integration tests caught; see
+    # docs/adr/0009 and docs/architecture/phase-1b-completion.md). `database_migration_url` is the
+    # separate, more-privileged role Alembic uses to run DDL; it defaults to the same value as
+    # `database_url` only when both are left unset in an environment that has no such distinction
+    # (never true for local/staging/production, which always set both explicitly).
+    database_url: str = _DEFAULT_LOCAL_DATABASE_URL
+    database_migration_url: str = _DEFAULT_LOCAL_MIGRATION_DATABASE_URL
+    database_pool_min_size: int = Field(default=1, ge=1)
+    database_pool_max_size: int = Field(default=10, ge=1)
+    database_statement_timeout_seconds: float = Field(default=10.0, gt=0)
+
     @model_validator(mode="after")
     def _validate_production_constraints(self) -> Settings:
         """Fail fast on configuration that is acceptable in dev but unsafe in production.
@@ -98,6 +123,15 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "environment=production must not fall back to console trace export; "
                     "configure otel_exporter_otlp_endpoint explicitly"
+                )
+            if self.database_url == _DEFAULT_LOCAL_DATABASE_URL:
+                raise ValueError(
+                    "environment=production must not use the local-dev default database_url"
+                )
+            if self.database_migration_url == _DEFAULT_LOCAL_MIGRATION_DATABASE_URL:
+                raise ValueError(
+                    "environment=production must not use the local-dev default "
+                    "database_migration_url"
                 )
         return self
 

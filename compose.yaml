@@ -1,17 +1,56 @@
 # Local development environment.
 #
-# Phase 1A ships only the `core` profile (API + worker), because Postgres/Valkey/Qdrant/Kafka/
-# Temporal/Keycloak/OPA/OpenBao/observability integrations are not wired into the application yet
-# (see docs/architecture/phase-0-assessment.md §5 for the phase-to-file mapping). Adding a service
-# here before the code that talks to it exists would be exactly the "untested configuration"
-# §28 rejects. Each additional profile from the master instruction (`workflow`, `events`,
-# `observability`, `security`, `local-models`, `hosted-models`, `full`) is added in the phase that
-# also delivers the corresponding application wiring, as a new profile block appended below --
-# never as a placeholder.
+# The `core` profile now covers API + worker + PostgreSQL, because Phase 1B wired real domain
+# persistence. Valkey/Qdrant/Kafka/Temporal/Keycloak/OPA/OpenBao/observability integrations are
+# still not wired into the application (see docs/architecture/phase-0-assessment.md §5 for the
+# phase-to-file mapping) -- adding a service here before the code that talks to it exists would be
+# exactly the "untested configuration" §28 rejects. Each additional profile from the master
+# instruction (`workflow`, `events`, `observability`, `security`, `local-models`,
+# `hosted-models`, `full`) is added in the phase that also delivers the corresponding application
+# wiring, as a new profile block appended below -- never as a placeholder.
 #
 # Run: docker compose --profile core up --build
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["core", "full"]
+    environment:
+      POSTGRES_USER: finassist
+      POSTGRES_PASSWORD: finassist
+      POSTGRES_DB: finassist
+    ports:
+      # Host-side 5433, not 5432: a common local dev machine already has its own Postgres bound
+      # to 5432. Container-internal port stays 5432 -- other compose services reach it at
+      # postgres:5432 over the compose network regardless of this host mapping.
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finassist -d finassist"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["core", "full"]
+    env_file:
+      - .env
+    environment:
+      # Migrations need DDL privileges the application role must never have -- see docs/adr/0009
+      # and settings.py's docstring on database_url vs database_migration_url.
+      FINASSIST_DATABASE_MIGRATION_URL: postgresql+asyncpg://finassist:finassist@postgres:5432/finassist
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["alembic", "upgrade", "head"]
+    restart: "no"
+
   api:
     build:
       context: .
@@ -23,6 +62,10 @@ services:
     environment:
       FINASSIST_HTTP_HOST: 0.0.0.0
       FINASSIST_HTTP_PORT: "8000"
+      FINASSIST_DATABASE_URL: postgresql+asyncpg://finassist_app:finassist_app@postgres:5432/finassist
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     healthcheck:
@@ -50,6 +93,10 @@ services:
     environment:
       FINASSIST_SERVICE_NAME: finassist-worker
       FINASSIST_HTTP_PORT: "8001"
+      FINASSIST_DATABASE_URL: postgresql+asyncpg://finassist_app:finassist_app@postgres:5432/finassist
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8001:8001"
     healthcheck:
@@ -65,3 +112,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+volumes:
+  postgres-data:

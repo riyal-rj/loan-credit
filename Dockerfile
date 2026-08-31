@@ -14,6 +14,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev || uv sync --no-install-project --no-dev
 COPY src ./src
 COPY apps ./apps
+COPY migrations ./migrations
+COPY alembic.ini ./
 COPY README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable || uv sync --no-dev --no-editable
@@ -25,6 +27,8 @@ WORKDIR /app
 COPY --from=builder --chown=finassist:finassist /app/.venv /app/.venv
 COPY --from=builder --chown=finassist:finassist /app/src /app/src
 COPY --from=builder --chown=finassist:finassist /app/apps /app/apps
+COPY --from=builder --chown=finassist:finassist /app/migrations /app/migrations
+COPY --from=builder --chown=finassist:finassist /app/alembic.ini /app/alembic.ini
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

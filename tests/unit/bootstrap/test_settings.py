@@ -49,8 +49,34 @@ def test_valid_production_configuration_is_accepted() -> None:
         log_format="json",
         otel_console_fallback=False,
         otel_exporter_otlp_endpoint="http://otel-collector:4318",
+        database_url="postgresql+asyncpg://prod-app:prod-app-pass@prod-host:5432/finassist",
+        database_migration_url="postgresql+asyncpg://prod-migrator:prod-migrator-pass@prod-host:5432/finassist",
     )
     assert settings.environment.value == "production"
+
+
+def test_production_rejects_default_local_database_url() -> None:
+    with pytest.raises(ValidationError, match="local-dev default database_url"):
+        Settings(
+            environment="production",
+            secret_provider="openbao",
+            log_format="json",
+            otel_console_fallback=False,
+            otel_exporter_otlp_endpoint="http://otel-collector:4318",
+            database_migration_url="postgresql+asyncpg://prod-migrator:prod-migrator-pass@prod-host:5432/finassist",
+        )
+
+
+def test_production_rejects_default_local_migration_database_url() -> None:
+    with pytest.raises(ValidationError, match="local-dev default database_migration_url"):
+        Settings(
+            environment="production",
+            secret_provider="openbao",
+            log_format="json",
+            otel_console_fallback=False,
+            otel_exporter_otlp_endpoint="http://otel-collector:4318",
+            database_url="postgresql+asyncpg://prod-app:prod-app-pass@prod-host:5432/finassist",
+        )
 
 
 def test_unknown_fields_are_rejected() -> None:

@@ -12,7 +12,8 @@ from finassist.security.dev_auth import AllowAllAuthorizationProvider
 from finassist.security.env_secret_provider import EnvSecretProvider
 
 
-def test_build_container_wires_dev_adapters_for_local_environment() -> None:
+@pytest.mark.asyncio
+async def test_build_container_wires_dev_adapters_for_local_environment() -> None:
     settings = Settings(environment="local", log_format="console")
 
     container = build_container(settings)
@@ -21,7 +22,7 @@ def test_build_container_wires_dev_adapters_for_local_environment() -> None:
     assert isinstance(container.authorization_provider, AllowAllAuthorizationProvider)
     assert container.settings is settings
 
-    shutdown_container(container)
+    await shutdown_container(container)
 
 
 def test_build_container_rejects_openbao_provider_not_yet_implemented() -> None:

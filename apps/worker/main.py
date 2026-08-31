@@ -78,7 +78,7 @@ async def main() -> None:
     logger.info("worker.shutdown.start")
     server.should_exit = True
     await asyncio.gather(heartbeat_task, server_task, return_exceptions=True)
-    shutdown_container(container)
+    await shutdown_container(container)
     logger.info("worker.shutdown.complete")
 
 

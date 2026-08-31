@@ -18,6 +18,9 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.28,<2.0",
     "prometheus-client>=0.21,<0.22",
     "asgi-correlation-id>=4.3,<5.0",
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "asyncpg>=0.30,<0.31",
+    "alembic>=1.14,<2.0",
 ]
 
 [project.optional-dependencies]
@@ -33,6 +36,7 @@ dev = [
     "import-linter>=2.1,<3.0",
     "pre-commit>=4.0,<5.0",
     "hypothesis>=6.115,<7.0",
+    "testcontainers[postgres]>=4.8,<5.0",
 ]
 
 [build-system]
@@ -68,7 +72,11 @@ module = "asgi_correlation_id.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Bare `pytest`/`make test` runs only the Docker-free layers (unit, property). Integration tests
+# need a real Postgres container and mutate process-wide env vars via a session-scoped
+# monkeypatch (tests/integration/conftest.py) that would otherwise leak into unit tests run in
+# the same process -- run them explicitly via `make test-integration` / `pytest tests/integration`.
+testpaths = ["tests/unit", "tests/property"]
 asyncio_mode = "auto"
 addopts = "--cov=finassist --cov-report=term-missing --cov-report=xml"
 
@@ -77,7 +85,10 @@ source = ["src/finassist"]
 branch = true
 
 [tool.coverage.report]
-fail_under = 90
+# Deliberately no `fail_under` here: pytest-cov auto-enforces this coverage config's fail_under
+# on *every* `pytest --cov` invocation, which would break running unit and integration coverage
+# as two separate processes that combine into one report (`make ci-full` / `coverage-check`).
+# The 90% gate is enforced explicitly, once, against the combined data -- see `make coverage-check`.
 exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]
 
 [tool.bandit]

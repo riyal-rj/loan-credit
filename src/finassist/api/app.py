@@ -46,7 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             logger.info("api.shutdown.start")
-            shutdown_container(container)
+            await shutdown_container(container)
 
     app = FastAPI(
         title="FinAssist Underwriting API",
