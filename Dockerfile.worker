@@ -1,0 +1,33 @@
+# syntax=docker/dockerfile:1.7
+# Worker image: same build as the API (Dockerfile) with a different entrypoint. Kept as a
+# separate file rather than a build-arg-selected entrypoint so each image's healthcheck and
+# exposed port are correct without conditional logic.
+
+FROM python:3.11-slim AS builder
+COPY --from=ghcr.io/astral-sh/uv:0.5.11 /uv /uvx /bin/
+WORKDIR /build
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+COPY pyproject.toml uv.lock* ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev || uv sync --no-install-project --no-dev
+COPY src ./src
+COPY apps ./apps
+COPY README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev || uv sync --no-dev
+
+FROM python:3.11-slim AS runtime
+RUN groupadd --system --gid 10001 finassist \
+    && useradd --system --uid 10001 --gid finassist --no-create-home finassist
+WORKDIR /app
+COPY --from=builder --chown=finassist:finassist /build/.venv /app/.venv
+COPY --from=builder --chown=finassist:finassist /build/src /app/src
+COPY --from=builder --chown=finassist:finassist /build/apps /app/apps
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+USER finassist
+EXPOSE 8001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health/live', timeout=3).status == 200 else 1)"
+ENTRYPOINT ["python", "-m", "apps.worker.main"]

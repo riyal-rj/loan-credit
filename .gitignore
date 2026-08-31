@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+dist/
+build/
+.env
+*.env.local
+
+# Never commit real secret values. .env.example is the only tracked env template.
+.env.*
+!.env.example

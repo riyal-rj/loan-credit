@@ -1,0 +1,67 @@
+# Local development environment.
+#
+# Phase 1A ships only the `core` profile (API + worker), because Postgres/Valkey/Qdrant/Kafka/
+# Temporal/Keycloak/OPA/OpenBao/observability integrations are not wired into the application yet
+# (see docs/architecture/phase-0-assessment.md §5 for the phase-to-file mapping). Adding a service
+# here before the code that talks to it exists would be exactly the "untested configuration"
+# §28 rejects. Each additional profile from the master instruction (`workflow`, `events`,
+# `observability`, `security`, `local-models`, `hosted-models`, `full`) is added in the phase that
+# also delivers the corresponding application wiring, as a new profile block appended below --
+# never as a placeholder.
+#
+# Run: docker compose --profile core up --build
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: finassist-api:local
+    profiles: ["core", "full"]
+    env_file:
+      - .env
+    environment:
+      FINASSIST_HTTP_HOST: 0.0.0.0
+      FINASSIST_HTTP_PORT: "8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: finassist-worker:local
+    profiles: ["core", "full"]
+    env_file:
+      - .env
+    environment:
+      FINASSIST_SERVICE_NAME: finassist-worker
+      FINASSIST_HTTP_PORT: "8001"
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
