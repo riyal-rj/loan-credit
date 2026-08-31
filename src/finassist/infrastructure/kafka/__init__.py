@@ -1,4 +1,3 @@
-"""finassist.infrastructure.kafka package.
-
-Scaffolded now; populated in a later phase (see docs/architecture/phase-0-assessment.md).
+"""finassist.infrastructure.kafka package: the outbox-relay producer and the projection consumer
+(Phase 3, docs/adr/0011).
 """

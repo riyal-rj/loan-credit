@@ -1,11 +1,18 @@
-"""Worker process entrypoint (Phase 1A boot path only).
+"""Worker process entrypoint.
 
-This process bootstraps the same settings/logging/telemetry stack as the API and runs a heartbeat
-loop plus its own liveness endpoint, so it is independently deployable, observable, and
-probe-able from the first commit. It deliberately does **not** connect to Temporal yet -- durable
-workflow/activity execution is Phase 3 scope (docs/architecture/phase-0-assessment.md §5). Adding
-Temporal here will replace the heartbeat loop's body, not the process's lifecycle/observability
-scaffolding.
+Bootstraps the same settings/logging/telemetry stack as the API and, since Phase 3, runs three
+background tasks alongside its own liveness endpoint: the Temporal `Worker` (hosts
+`ApplicationWorkflow` + its activities), the outbox-relay loop (publishes `integration.
+outbox_events` to Kafka), and the projection-consumer loop (maintains `applications.
+status_projection` from that same topic). Phase 1A's heartbeat loop is gone -- these three tasks
+are the worker's real job now; the process lifecycle/observability/signal-handling scaffolding
+around them is unchanged.
+
+Each task is wrapped by `_run_with_retry` (backoff, retry until `stop_event`): compose's
+`depends_on: service_healthy` ordering is a best effort, not a guarantee, and a worker that
+crash-loops the whole process because Temporal or Kafka took a few extra seconds to become
+reachable is exactly the "must not crash-loop on a slow/unavailable dependency" failure
+`api/app.py`'s `object_store.ensure_ready()` handling already avoids for the API process.
 
 Run with: ``uv run python -m apps.worker.main`` or ``make run-worker``.
 """
@@ -14,17 +21,25 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from collections.abc import Awaitable, Callable
 
 import uvicorn
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from finassist.application.ports.unit_of_work import UnitOfWorkFactory
 from finassist.bootstrap.container import build_container, shutdown_container
 from finassist.bootstrap.logging import get_logger
-from finassist.bootstrap.settings import get_settings
+from finassist.bootstrap.settings import Settings, get_settings
+from finassist.domain.shared.clock import Clock
+from finassist.infrastructure.kafka.outbox_relay import relay_once
+from finassist.infrastructure.kafka.producer import KafkaEventProducer
+from finassist.infrastructure.kafka.projection_consumer import run_projection_consumer
+from finassist.infrastructure.temporal.worker import build_worker
 
 logger = get_logger(__name__)
 
-HEARTBEAT_INTERVAL_SECONDS = 30.0
+_RETRY_BACKOFF_SECONDS = 5.0
 
 
 def _build_liveness_app() -> FastAPI:
@@ -37,13 +52,87 @@ def _build_liveness_app() -> FastAPI:
     return app
 
 
-async def _heartbeat_loop(stop_event: asyncio.Event) -> None:
+async def _run_with_retry(
+    name: str, stop_event: asyncio.Event, run_once: Callable[[], Awaitable[None]]
+) -> None:
+    """Runs ``run_once()`` repeatedly until it returns normally (the task noticed `stop_event`
+    itself and exited cleanly) or `stop_event` is set. An exception -- e.g. Temporal/Kafka not
+    reachable yet -- is logged and retried after a fixed backoff rather than propagating."""
     while not stop_event.is_set():
-        logger.info("worker.heartbeat")
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=HEARTBEAT_INTERVAL_SECONDS)
-        except TimeoutError:
-            continue
+            await run_once()
+        except Exception as exc:  # noqa: BLE001 - see module docstring
+            if stop_event.is_set():
+                return
+            logger.error(f"worker.{name}.failed_will_retry", error=str(exc))
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=_RETRY_BACKOFF_SECONDS)
+            except TimeoutError:
+                continue
+        else:
+            return
+
+
+async def _run_temporal_worker(
+    stop_event: asyncio.Event,
+    *,
+    settings: Settings,
+    uow_factory: UnitOfWorkFactory,
+    clock: Clock,
+) -> None:
+    worker = await build_worker(settings=settings, uow_factory=uow_factory, clock=clock)
+    run_task = asyncio.create_task(worker.run())
+    await stop_event.wait()
+    await worker.shutdown()
+    await run_task
+
+
+async def _run_outbox_relay(
+    stop_event: asyncio.Event,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> None:
+    producer = KafkaEventProducer(
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        security_protocol=settings.kafka_security_protocol,
+        topic=settings.kafka_applications_topic,
+    )
+    await producer.ensure_ready()
+    try:
+        while not stop_event.is_set():
+            published = await relay_once(
+                session_factory=session_factory,
+                producer=producer,
+                batch_size=settings.kafka_outbox_relay_batch_size,
+            )
+            if published:
+                logger.info("outbox_relay.published", count=published)
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),
+                    timeout=settings.kafka_outbox_relay_poll_interval_seconds,
+                )
+            except TimeoutError:
+                continue
+    finally:
+        await producer.close()
+
+
+async def _run_projection_consumer(
+    stop_event: asyncio.Event,
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+) -> None:
+    await run_projection_consumer(
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        security_protocol=settings.kafka_security_protocol,
+        topic=settings.kafka_applications_topic,
+        consumer_group=settings.kafka_projection_consumer_group,
+        session_factory=session_factory,
+        stop_signal=stop_event,
+    )
 
 
 async def main() -> None:
@@ -71,13 +160,44 @@ async def main() -> None:
 
     logger.info("worker.startup.complete", liveness_port=settings.http_port)
 
-    heartbeat_task = asyncio.create_task(_heartbeat_loop(stop_event))
+    temporal_task = asyncio.create_task(
+        _run_with_retry(
+            "temporal_worker",
+            stop_event,
+            lambda: _run_temporal_worker(
+                stop_event,
+                settings=settings,
+                uow_factory=container.uow_factory,
+                clock=container.clock,
+            ),
+        )
+    )
+    outbox_relay_task = asyncio.create_task(
+        _run_with_retry(
+            "outbox_relay",
+            stop_event,
+            lambda: _run_outbox_relay(
+                stop_event, session_factory=container.session_factory, settings=settings
+            ),
+        )
+    )
+    projection_task = asyncio.create_task(
+        _run_with_retry(
+            "projection_consumer",
+            stop_event,
+            lambda: _run_projection_consumer(
+                stop_event, session_factory=container.session_factory, settings=settings
+            ),
+        )
+    )
     server_task = asyncio.create_task(server.serve())
 
     await stop_event.wait()
     logger.info("worker.shutdown.start")
     server.should_exit = True
-    await asyncio.gather(heartbeat_task, server_task, return_exceptions=True)
+    await asyncio.gather(
+        temporal_task, outbox_relay_task, projection_task, server_task, return_exceptions=True
+    )
     await shutdown_container(container)
     logger.info("worker.shutdown.complete")
 

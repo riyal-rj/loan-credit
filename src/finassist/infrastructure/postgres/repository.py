@@ -42,6 +42,7 @@ def _application_to_row(application: Application) -> ApplicationRow:
         version=application.version,
         created_at=application.created_at,
         updated_at=application.updated_at,
+        active_workflow_id=application.active_workflow_id,
     )
 
 
@@ -57,6 +58,7 @@ def _row_to_application(row: ApplicationRow) -> Application:
         version=row.version,
         created_at=row.created_at,
         updated_at=row.updated_at,
+        active_workflow_id=row.active_workflow_id,
     )
 
 
@@ -116,6 +118,7 @@ class SqlAlchemyApplicationRepository(ApplicationRepository):
         existing.updated_at = application.updated_at
         existing.requested_amount = application.requested_amount.amount
         existing.requested_term_months = application.requested_term_months
+        existing.active_workflow_id = application.active_workflow_id
         self._session.add(_version_snapshot_row(application, self._new_id()))
         await self._session.flush()
 

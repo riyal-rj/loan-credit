@@ -113,6 +113,30 @@ class Settings(BaseSettings):
     object_store_use_ssl: bool = False
     object_store_request_timeout_seconds: float = Field(default=5.0, gt=0)
 
+    # Local-dev-only defaults matching compose.yaml's `temporal` service (docs/adr/0011): a
+    # single-binary `temporal server start-dev` instance, no TLS, no persistent store. Phase 9/10
+    # replaces this with a real persistent-store cluster; `temporal_tls_enabled` exists now so the
+    # production-safety validator below has something real to check rather than being added later
+    # as an afterthought.
+    temporal_host: str = "localhost"
+    temporal_port: int = Field(default=7233, ge=1, le=65535)
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "finassist-applications"
+    temporal_tls_enabled: bool = False
+    temporal_human_review_sla_seconds: float = Field(default=30 * 24 * 60 * 60, gt=0)
+    """Durable timer duration for `AWAITING_HUMAN_REVIEW` before the workflow auto-escalates
+    (docs/adr/0002 "durable timers for ... escalation"). 30 days by default; tests override this
+    per-workflow-input rather than changing process-wide settings."""
+
+    # Local-dev-only defaults matching compose.yaml's `kafka` service (single-broker KRaft mode,
+    # no auth). docs/adr/0011: Apicurio schema registry is deferred past this phase.
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_applications_topic: str = "finassist.applications.events"
+    kafka_security_protocol: str = Field(default="PLAINTEXT", pattern="^(PLAINTEXT|SSL)$")
+    kafka_outbox_relay_poll_interval_seconds: float = Field(default=2.0, gt=0)
+    kafka_outbox_relay_batch_size: int = Field(default=100, ge=1)
+    kafka_projection_consumer_group: str = "applications-projection"
+
     @model_validator(mode="after")
     def _validate_production_constraints(self) -> Settings:
         """Fail fast on configuration that is acceptable in dev but unsafe in production.
@@ -148,6 +172,16 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "environment=production must not use the local-dev default "
                     "object_store_secret_key"
+                )
+            if not self.temporal_tls_enabled:
+                raise ValueError(
+                    "environment=production requires temporal_tls_enabled=true; the dev-mode "
+                    "Temporal server (docs/adr/0011) has no TLS and must never be reachable "
+                    "from a production process"
+                )
+            if self.kafka_security_protocol == "PLAINTEXT":
+                raise ValueError(
+                    "environment=production must not use kafka_security_protocol=PLAINTEXT"
                 )
         return self
 

@@ -1,4 +1,4 @@
-.PHONY: sync lint format typecheck test test-integration coverage-check test-cov security import-lint ci ci-full migrate run-api run-worker compose-up compose-down pre-commit-install clean
+.PHONY: sync lint format typecheck test test-integration test-workflow coverage-check test-cov security import-lint ci ci-full migrate run-api run-worker compose-up compose-down pre-commit-install clean
 
 UV := uv
 
@@ -35,6 +35,13 @@ test:
 test-integration:
 	$(UV) run pytest tests/integration --cov=finassist --cov-append --cov-report=
 
+# Temporal workflow replay/behavior tests (docs/adr/0002 §13 "test workflow replay"). Docker-free
+# by default (temporalio.testing.WorkflowEnvironment's time-skipping server is downloaded/managed
+# by the SDK itself, not a container) -- kept as its own target because it is its own test layer
+# (`tests/workflow/`), not because it needs different infrastructure than `test`.
+test-workflow:
+	$(UV) run pytest tests/workflow --cov=finassist --cov-append --cov-report=
+
 # The real 90% gate (docs/architecture/phase-1b-completion.md), checked once against the combined
 # .coverage data from `test` + `test-integration` -- never auto-enforced per-invocation (see the
 # comment on [tool.coverage.report] in pyproject.toml).
@@ -58,7 +65,7 @@ ci: lint typecheck import-lint test security
 # Same as `ci` plus the Docker-dependent integration suite and the combined coverage gate. Run
 # this before accepting a phase that touches persistence; `ci` alone is not sufficient once real
 # database code exists.
-ci-full: lint typecheck import-lint test test-integration coverage-check security
+ci-full: lint typecheck import-lint test test-workflow test-integration coverage-check security
 
 run-api:
 	$(UV) run uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload

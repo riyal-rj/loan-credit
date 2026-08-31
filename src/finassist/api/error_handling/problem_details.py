@@ -15,8 +15,41 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from finassist.bootstrap.logging import get_logger
+from finassist.domain.applications.exceptions import (
+    ApplicationNotFoundError,
+    ConcurrencyConflictError,
+    DuplicateRequestError,
+    IllegalStateTransitionError,
+    InvalidApplicationDataError,
+    NoActiveWorkflowError,
+    ProductNotFoundError,
+    ProductRejectedRequestError,
+)
 
 logger = get_logger(__name__)
+
+# Domain/application exceptions never subclass `DomainError` -- doing so would require
+# `finassist.domain` to import `finassist.api`, which the import-linter layers contract forbids.
+# This table is the API layer's mapping from a plain domain exception type to the RFC 9457
+# response it becomes, kept in one place instead of scattered per-route try/except blocks
+# (master instruction §11: "meaningful problem codes for policy, authorization, validation, and
+# dependency failures").
+_DOMAIN_EXCEPTION_STATUS: dict[type[Exception], tuple[int, str]] = {
+    ApplicationNotFoundError: (status.HTTP_404_NOT_FOUND, "application_not_found"),
+    ProductNotFoundError: (status.HTTP_404_NOT_FOUND, "product_not_found"),
+    DuplicateRequestError: (status.HTTP_409_CONFLICT, "duplicate_request"),
+    ConcurrencyConflictError: (status.HTTP_409_CONFLICT, "concurrency_conflict"),
+    IllegalStateTransitionError: (status.HTTP_409_CONFLICT, "illegal_state_transition"),
+    NoActiveWorkflowError: (status.HTTP_409_CONFLICT, "no_active_workflow"),
+    ProductRejectedRequestError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "product_rejected_request",
+    ),
+    InvalidApplicationDataError: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "invalid_application_data",
+    ),
+}
 
 PROBLEM_CONTENT_TYPE = "application/problem+json"
 
@@ -94,6 +127,25 @@ def register_error_handlers(app: FastAPI) -> None:
             code=exc.code,
             problem_type=exc.problem_type,
         )
+
+    for exc_type, (http_status, code) in _DOMAIN_EXCEPTION_STATUS.items():
+
+        def _make_handler(
+            http_status: int, code: str
+        ) -> Any:
+            async def _handle(request: Request, exc: Exception) -> JSONResponse:
+                logger.warning("api.domain_error", code=code, detail=str(exc))
+                return _problem_response(
+                    request,
+                    http_status=http_status,
+                    title=type(exc).__name__,
+                    detail=str(exc),
+                    code=code,
+                )
+
+            return _handle
+
+        app.add_exception_handler(exc_type, _make_handler(http_status, code))
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(

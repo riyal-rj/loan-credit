@@ -1,18 +1,21 @@
 # Local development environment.
 #
-# The `core` profile now covers API + worker + PostgreSQL + MinIO, because Phase 1B/2 wired real
-# domain persistence and the object-storage document lifecycle. `synthetic-systems` (Phase 2) adds
-# the mock LOS/KYC/bureau/employer/core-banking services. Valkey/Qdrant/Kafka/Temporal/Keycloak/
-# OPA/OpenBao/observability integrations are still not wired into the application (see
-# docs/architecture/phase-0-assessment.md §5 for the phase-to-file mapping) -- adding a service
-# here before the code that talks to it exists would be exactly the "untested configuration" §28
-# rejects. Each additional profile from the master instruction (`workflow`, `events`,
-# `observability`, `security`, `local-models`, `hosted-models`) is added in the phase that also
-# delivers the corresponding application wiring, as a new profile block appended below -- never as
-# a placeholder. `full` includes everything defined so far.
+# The `core` profile covers API + worker + PostgreSQL + MinIO. `synthetic-systems` (Phase 2) adds
+# the mock LOS/KYC/bureau/employer/core-banking services. `workflow` (Temporal) and `events`
+# (Kafka) are new in Phase 3 -- the worker process now genuinely depends on both to do its job
+# (hosting `ApplicationWorkflow`, relaying the outbox, maintaining the status projection), so `core`
+# alone no longer boots a *functional* worker, only a live one (docs/adr/0011: the worker's
+# background tasks retry-with-backoff rather than crash-looping when a dependency isn't up yet).
+# Valkey/Qdrant/Keycloak/OPA/OpenBao/observability integrations are still not wired into the
+# application (see docs/architecture/phase-0-assessment.md §5 for the phase-to-file mapping) --
+# adding a service here before the code that talks to it exists would be exactly the "untested
+# configuration" §28 rejects. Each remaining profile from the master instruction (`observability`,
+# `security`, `local-models`, `hosted-models`) is added in the phase that also delivers the
+# corresponding application wiring, as a new profile block appended below -- never as a
+# placeholder. `full` includes everything defined so far.
 #
 # Run: docker compose --profile core up --build
-# Run: docker compose --profile full up --build   # core + the synthetic mock services
+# Run: docker compose --profile full up --build   # core + synthetic mocks + Temporal + Kafka
 
 services:
   postgres:
@@ -55,6 +58,60 @@ services:
       retries: 10
       start_period: 5s
 
+  temporal:
+    image: temporalio/temporal:1.8.2
+    profiles: ["workflow", "full"]
+    command:
+      [
+        "server", "start-dev",
+        "--ip", "0.0.0.0",
+        "--port", "7233",
+        "--http-port", "7243",
+        "--ui-port", "8233",
+      ]
+    # Single-binary dev-mode server (in-memory sqlite, no TLS) -- the same "dev-only, real adapter
+    # deferred" pattern as the env-based SecretProvider (docs/adr/0005): a persistent-store
+    # Temporal cluster is Phase 9/10 scope, not this phase's (docs/adr/0011). No `--db-filename`/
+    # volume: workflow history does not survive a restart, which is fine for local dev and avoids
+    # fighting the image's non-root user over a bind-mounted directory's write permissions.
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "localhost:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  kafka:
+    image: apache/kafka:3.8.0
+    profiles: ["events", "full"]
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9094
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    # Single-broker KRaft mode (no ZooKeeper). Apicurio schema registry is deliberately not
+    # included -- deferred past this phase (docs/adr/0011); envelopes are JSON, validated by code
+    # and tests.
+    ports:
+      - "9094:9094"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+
   migrate:
     build:
       context: .
@@ -88,6 +145,12 @@ services:
       FINASSIST_OBJECT_STORE_ENDPOINT_URL: http://minio:9000
       FINASSIST_OBJECT_STORE_ACCESS_KEY: finassist
       FINASSIST_OBJECT_STORE_SECRET_KEY: finassist_minio_secret
+      FINASSIST_TEMPORAL_HOST: temporal
+    # No `depends_on: temporal` here on purpose: `temporal` only exists in the `workflow`/`full`
+    # profiles, and `api` must still boot standalone under `--profile core` (docs comment above).
+    # `TemporalWorkflowRunner.ensure_ready()` is called from the same try/except-and-warn path as
+    # `object_store.ensure_ready()` in api/app.py's lifespan, so a not-yet-reachable Temporal here
+    # degrades `/health/ready`, not startup.
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -121,6 +184,11 @@ services:
       FINASSIST_SERVICE_NAME: finassist-worker
       FINASSIST_HTTP_PORT: "8001"
       FINASSIST_DATABASE_URL: postgresql+asyncpg://finassist_app:finassist_app@postgres:5432/finassist
+      FINASSIST_TEMPORAL_HOST: temporal
+      FINASSIST_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    # No `depends_on: temporal`/`kafka` here either -- same reasoning as `api` above. The worker's
+    # three background tasks each retry-with-backoff independently until their dependency is
+    # reachable (docs/adr/0011), so relative startup order across profiles doesn't matter.
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -223,3 +291,4 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  kafka-data:

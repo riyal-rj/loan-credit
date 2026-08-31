@@ -1,4 +1,3 @@
-"""finassist.application.queries package.
-
-Scaffolded now; populated in a later phase (see docs/architecture/phase-0-assessment.md).
-"""
+"""Read-only query handlers -- the `application/queries/` package the repository structure
+(master instruction §22) reserves for CQRS-style reads that don't belong on a write repository
+port. First populated in Phase 3 (`get_application_status`)."""

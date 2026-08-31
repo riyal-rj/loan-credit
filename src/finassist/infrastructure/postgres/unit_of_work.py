@@ -20,6 +20,7 @@ from finassist.domain.applications.events import DomainEvent
 from finassist.domain.shared.clock import Clock
 from finassist.domain.shared.identifiers import TenantId
 from finassist.infrastructure.postgres.audit_hash import GENESIS_HASH, compute_audit_hash
+from finassist.infrastructure.postgres.document_repository import SqlAlchemyDocumentRepository
 from finassist.infrastructure.postgres.event_mapping import event_to_record
 from finassist.infrastructure.postgres.orm_models import (
     AuditEventRow,
@@ -31,6 +32,9 @@ from finassist.infrastructure.postgres.product_catalog import SqlAlchemyProductC
 from finassist.infrastructure.postgres.repository import (
     SqlAlchemyApplicantRepository,
     SqlAlchemyApplicationRepository,
+)
+from finassist.infrastructure.postgres.review_queue_repository import (
+    SqlAlchemyReviewQueueRepository,
 )
 
 _SCHEMA_VERSION = 1
@@ -70,6 +74,8 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         )
         self.applicants = SqlAlchemyApplicantRepository(self._session, self._clock)
         self.products = SqlAlchemyProductCatalog(self._session)
+        self.documents = SqlAlchemyDocumentRepository(self._session)
+        self.review_queue = SqlAlchemyReviewQueueRepository(self._session)
         return self
 
     async def __aexit__(

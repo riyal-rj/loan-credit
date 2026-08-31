@@ -6,11 +6,12 @@ SQLAlchemy imports (enforced by the import-linter contract in `pyproject.toml`).
 `SqlAlchemyApplicationRepository`/`SqlAlchemyApplicantRepository` (`repository.py`) do the
 translation both ways.
 
-Only tables with an active read/write code path in Phase 1B are ORM-mapped here. `identity.
-tenants`, `applications.consent_records`, and `integration.inbox_messages` exist as real tables
-(created by the Alembic migration) but have no ORM class yet -- consent capture and the inbox
-consumer are Phase 3+ concerns (docs/adr/0009); mapping them now would be exactly the "code with
-no caller" premature abstraction the coding standards warn against.
+Only tables with an active read/write code path are ORM-mapped here. `identity.tenants` and
+`applications.consent_records` exist as real tables (created by the Alembic migration) but have no
+ORM class yet -- consent capture is still not scheduled to a phase; mapping it now would be
+exactly the "code with no caller" premature abstraction the coding standards warn against.
+`integration.inbox_messages` *is* now mapped (Phase 3): `KafkaProjectionConsumer` is its first
+real caller (docs/adr/0011).
 """
 
 from __future__ import annotations
@@ -91,6 +92,7 @@ class ApplicationRow(Base):
     version: Mapped[int]
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime]
+    active_workflow_id: Mapped[str | None]
 
 
 class ApplicationVersionRow(Base):
@@ -188,4 +190,66 @@ class AuditHashRow(Base):
     tenant_id: Mapped[str] = mapped_column(primary_key=True)
     latest_event_id: Mapped[str | None]
     latest_hash: Mapped[str]
+    updated_at: Mapped[datetime]
+
+
+class InboxMessageRow(Base):
+    """Consumer-side dedup record (docs/adr/0009's outbox/inbox pattern). One row per
+    (event_id, consumer_name) successfully applied; `KafkaProjectionConsumer` inserts one before
+    applying an event and treats a unique-violation as "already processed, skip" (Phase 3)."""
+
+    __tablename__ = "inbox_messages"
+    __table_args__ = {"schema": "integration"}
+
+    event_id: Mapped[str] = mapped_column(primary_key=True)
+    consumer_name: Mapped[str] = mapped_column(primary_key=True)
+    processed_at: Mapped[datetime]
+
+
+class DocumentRow(Base):
+    __tablename__ = "documents"
+    __table_args__ = {"schema": "applications"}
+
+    document_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    document_type: Mapped[str]
+    object_key: Mapped[str]
+    checksum_sha256: Mapped[str]
+    size_bytes: Mapped[int]
+    uploaded_at: Mapped[datetime]
+
+
+class ReviewQueueEntryRow(Base):
+    """The Phase-3 reviewer-queue stopgap (docs/adr/0011) -- one row per application that has
+    reached `AWAITING_HUMAN_REVIEW`. Phase 7 owns assignment/claim/SLA; this only tracks whether a
+    decision has been recorded."""
+
+    __tablename__ = "review_queue_entries"
+    __table_args__ = {"schema": "review"}
+
+    application_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    entered_queue_at: Mapped[datetime]
+    status: Mapped[str]
+    decision: Mapped[str | None]
+    reason: Mapped[str | None]
+    reviewer_id: Mapped[str | None]
+    decided_at: Mapped[datetime | None]
+
+
+class StatusProjectionRow(Base):
+    """Read model maintained by `KafkaProjectionConsumer` from published `ApplicationStateChanged`
+    events -- demonstrates the outbox -> Kafka -> inbox-dedup -> projection loop end to end
+    (docs/adr/0011). Written only by the consumer; nothing else may write to this table."""
+
+    __tablename__ = "status_projection"
+    __table_args__ = {"schema": "applications"}
+
+    application_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    status: Mapped[str]
+    version: Mapped[int]
     updated_at: Mapped[datetime]

@@ -13,7 +13,9 @@ from typing import Protocol, runtime_checkable
 
 from finassist.application.ports.applicant_repository import ApplicantRepository
 from finassist.application.ports.application_repository import ApplicationRepository
+from finassist.application.ports.document_repository import DocumentRepository
 from finassist.application.ports.product_catalog import ProductCatalog
+from finassist.application.ports.review_queue_repository import ReviewQueueRepository
 from finassist.domain.applications.events import DomainEvent
 from finassist.domain.shared.identifiers import TenantId
 
@@ -23,6 +25,8 @@ class UnitOfWork(Protocol):
     applications: ApplicationRepository
     applicants: ApplicantRepository
     products: ProductCatalog
+    documents: DocumentRepository
+    review_queue: ReviewQueueRepository
 
     async def __aenter__(self) -> UnitOfWork: ...
 

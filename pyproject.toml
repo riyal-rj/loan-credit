@@ -22,6 +22,9 @@ dependencies = [
     "asyncpg>=0.30,<0.31",
     "alembic>=1.14,<2.0",
     "aioboto3>=15.0,<16.0",
+    "temporalio>=1.8,<2.0",
+    "aiokafka>=0.11,<0.13",
+    "python-multipart>=0.0.18,<0.1",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +40,7 @@ dev = [
     "import-linter>=2.1,<3.0",
     "pre-commit>=4.0,<5.0",
     "hypothesis>=6.115,<7.0",
-    "testcontainers[postgres]>=4.8,<5.0",
+    "testcontainers[postgres,kafka]>=4.8,<5.0",
     "minio>=7.2,<8.0",
 ]
 
@@ -57,6 +60,13 @@ src = ["src", "apps", "tests"]
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "ASYNC", "S"]
 ignore = ["S101"]
 
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency-injection idiom is exactly `Depends(...)`/`File(...)`/`Form(...)` as a
+# parameter default (Phase 3's first routes, `finassist/api/routes/applications.py`) -- B008
+# otherwise flags every one of them as a mutable-default footgun, which this specific call shape
+# is not.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.File", "fastapi.Form", "fastapi.Header"]
+
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "S105", "S106"]
 
@@ -75,6 +85,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["aioboto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["aiokafka.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -113,6 +127,7 @@ forbidden_modules = [
     "sqlalchemy",
     "asyncpg",
     "kafka",
+    "aiokafka",
     "temporalio",
     "langgraph",
     "langfuse",
@@ -129,6 +144,7 @@ forbidden_modules = [
     "sqlalchemy",
     "asyncpg",
     "kafka",
+    "aiokafka",
     "temporalio",
     "finassist.infrastructure",
     "finassist.api",

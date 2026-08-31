@@ -52,6 +52,8 @@ def test_valid_production_configuration_is_accepted() -> None:
         database_url="postgresql+asyncpg://prod-app:prod-app-pass@prod-host:5432/finassist",
         database_migration_url="postgresql+asyncpg://prod-migrator:prod-migrator-pass@prod-host:5432/finassist",
         object_store_secret_key="prod-object-store-secret",
+        temporal_tls_enabled=True,
+        kafka_security_protocol="SSL",
     )
     assert settings.environment.value == "production"
 
@@ -78,6 +80,36 @@ def test_production_rejects_default_local_database_url() -> None:
             otel_console_fallback=False,
             otel_exporter_otlp_endpoint="http://otel-collector:4318",
             database_migration_url="postgresql+asyncpg://prod-migrator:prod-migrator-pass@prod-host:5432/finassist",
+        )
+
+
+def test_production_requires_temporal_tls() -> None:
+    with pytest.raises(ValidationError, match="temporal_tls_enabled=true"):
+        Settings(
+            environment="production",
+            secret_provider="openbao",
+            log_format="json",
+            otel_console_fallback=False,
+            otel_exporter_otlp_endpoint="http://otel-collector:4318",
+            database_url="postgresql+asyncpg://prod-app:prod-app-pass@prod-host:5432/finassist",
+            database_migration_url="postgresql+asyncpg://prod-migrator:prod-migrator-pass@prod-host:5432/finassist",
+            object_store_secret_key="prod-object-store-secret",
+            kafka_security_protocol="SSL",
+        )
+
+
+def test_production_rejects_plaintext_kafka() -> None:
+    with pytest.raises(ValidationError, match="kafka_security_protocol=PLAINTEXT"):
+        Settings(
+            environment="production",
+            secret_provider="openbao",
+            log_format="json",
+            otel_console_fallback=False,
+            otel_exporter_otlp_endpoint="http://otel-collector:4318",
+            database_url="postgresql+asyncpg://prod-app:prod-app-pass@prod-host:5432/finassist",
+            database_migration_url="postgresql+asyncpg://prod-migrator:prod-migrator-pass@prod-host:5432/finassist",
+            object_store_secret_key="prod-object-store-secret",
+            temporal_tls_enabled=True,
         )
 
 

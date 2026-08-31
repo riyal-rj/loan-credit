@@ -32,3 +32,18 @@ class ApplicationStateChanged(DomainEvent):
     previous_status: ApplicationStatus
     new_status: ApplicationStatus
     reason: str
+    version: int
+    """The aggregate's version *after* this transition (Phase 3): carried so a downstream
+    consumer -- e.g. `KafkaProjectionConsumer` -- can maintain an ordered read model without a
+    second query back to the aggregate."""
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentUploaded(DomainEvent):
+    """Raised by `UploadDocumentHandler` (Phase 3) -- not produced by an `Application.
+    transition_to` call, since uploading a document is not itself a case-status change. The
+    handler constructs this event directly and passes it to `UnitOfWork.record_domain_events`."""
+
+    document_id: str
+    document_type: str
+    object_key: str

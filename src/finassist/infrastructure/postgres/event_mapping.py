@@ -13,6 +13,7 @@ from typing import Any
 from finassist.domain.applications.events import (
     ApplicationCreated,
     ApplicationStateChanged,
+    DocumentUploaded,
     DomainEvent,
 )
 
@@ -35,6 +36,17 @@ def event_to_record(event: DomainEvent) -> tuple[str, str, dict[str, Any]]:
                 "previous_status": event.previous_status.value,
                 "new_status": event.new_status.value,
                 "reason": event.reason,
+                "version": event.version,
+            },
+        )
+    if isinstance(event, DocumentUploaded):
+        return (
+            "DocumentUploaded",
+            AGGREGATE_TYPE_APPLICATION,
+            {
+                "document_id": event.document_id,
+                "document_type": event.document_type,
+                "object_key": event.object_key,
             },
         )
     raise UnmappedDomainEventError(event)

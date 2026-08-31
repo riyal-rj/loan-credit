@@ -26,7 +26,7 @@ from finassist.domain.shared.identifiers import (
 )
 from finassist.domain.shared.money import Money
 
-from ._fakes import FakeUnitOfWorkFactory
+from ._fakes import FakeUnitOfWorkFactory, FakeWorkflowRunner
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -135,6 +135,50 @@ async def test_stale_write_raises_concurrency_conflict() -> None:
     async with factory.begin(tenant_id=tenant_id) as uow:
         with pytest.raises(ConcurrencyConflictError):
             await uow.applications.save(stale_copy)
+
+
+@pytest.mark.asyncio
+async def test_submit_starts_workflow_and_attaches_workflow_id() -> None:
+    factory = FakeUnitOfWorkFactory()
+    tenant_id = TenantId(new_id())
+    application_id = await _seed_draft_application(factory, tenant_id)
+    workflow_runner = FakeWorkflowRunner()
+    handler = SubmitApplicationHandler(
+        uow_factory=factory, clock=FixedClock(_NOW), workflow_runner=workflow_runner
+    )
+
+    result = await handler.handle(
+        SubmitApplicationCommand(
+            tenant_id=tenant_id, application_id=application_id, idempotency_key="key-1"
+        )
+    )
+
+    assert result.workflow_id is not None
+    assert len(workflow_runner.started) == 1
+    started = workflow_runner.started[0]
+    assert started.workflow_id == result.workflow_id
+    assert started.starting_status == ApplicationStatus.SUBMITTED.value
+    assert started.version == result.version
+
+
+@pytest.mark.asyncio
+async def test_workflow_start_failure_does_not_fail_submit() -> None:
+    factory = FakeUnitOfWorkFactory()
+    tenant_id = TenantId(new_id())
+    application_id = await _seed_draft_application(factory, tenant_id)
+    handler = SubmitApplicationHandler(
+        uow_factory=factory,
+        clock=FixedClock(_NOW),
+        workflow_runner=FakeWorkflowRunner(fail_on_start=True),
+    )
+
+    result = await handler.handle(
+        SubmitApplicationCommand(
+            tenant_id=tenant_id, application_id=application_id, idempotency_key="key-1"
+        )
+    )
+
+    assert result.status is ApplicationStatus.SUBMITTED
 
 
 @pytest.mark.asyncio

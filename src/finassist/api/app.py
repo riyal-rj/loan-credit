@@ -19,6 +19,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from finassist.api.error_handling.problem_details import register_error_handlers
 from finassist.api.middleware.metrics import MetricsMiddleware
 from finassist.api.middleware.request_limits import RequestSizeLimitMiddleware
+from finassist.api.routes.applications import build_applications_router
 from finassist.api.routes.health import build_health_router
 from finassist.bootstrap.container import Container, build_container, shutdown_container
 from finassist.bootstrap.logging import get_logger
@@ -43,8 +44,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await container.object_store.ensure_ready()
         except Exception as exc:  # noqa: BLE001 - startup must not crash-loop on a slow/unavailable dependency
             logger.warning("api.object_store_ensure_ready_failed", error=str(exc))
+        try:
+            await container.workflow_runner.ensure_ready()
+        except Exception as exc:  # noqa: BLE001 - same rationale as object_store above
+            logger.warning("api.workflow_runner_ensure_ready_failed", error=str(exc))
         app.state.container = container
         app.include_router(build_health_router(container))
+        app.include_router(build_applications_router(container))
         logger.info("api.startup.complete")
         try:
             yield

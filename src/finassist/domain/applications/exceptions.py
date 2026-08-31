@@ -71,6 +71,16 @@ class ProductRejectedRequestError(ValueError):
         self.product_id = product_id
 
 
+class NoActiveWorkflowError(RuntimeError):
+    """Raised when a review decision is submitted for an application with no
+    `active_workflow_id` to signal (Phase 3) -- e.g. it never reached `AWAITING_HUMAN_REVIEW`, or
+    a decision was already applied and the prior workflow execution has ended."""
+
+    def __init__(self, application_id: str) -> None:
+        super().__init__(f"application {application_id} has no active workflow to signal")
+        self.application_id = application_id
+
+
 class DuplicateRequestError(RuntimeError):
     """Raised when a command's idempotency key has already been reserved.
 

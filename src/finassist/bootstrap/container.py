@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from finassist.application.ports.id_generator import IdGenerator, UuidIdGenerator
 from finassist.application.ports.object_store import ObjectStore
 from finassist.application.ports.unit_of_work import UnitOfWorkFactory
+from finassist.application.ports.workflow_runner import WorkflowRunner
 from finassist.bootstrap.logging import configure_logging, get_logger
 from finassist.bootstrap.settings import Environment, SecretProviderKind, Settings, get_settings
 from finassist.bootstrap.telemetry import configure_telemetry, shutdown_telemetry
@@ -25,6 +26,7 @@ from finassist.domain.shared.clock import Clock, SystemClock
 from finassist.infrastructure.object_store.minio_client import S3ObjectStore
 from finassist.infrastructure.postgres.database import build_engine, build_session_factory
 from finassist.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from finassist.infrastructure.temporal.client import TemporalWorkflowRunner
 from finassist.security.env_secret_provider import EnvSecretProvider
 from finassist.security.ports import AuthorizationProvider, SecretProvider
 
@@ -53,6 +55,7 @@ class Container:
     id_generator: IdGenerator
     uow_factory: UnitOfWorkFactory
     object_store: ObjectStore
+    workflow_runner: WorkflowRunner
 
 
 def _build_secret_provider(settings: Settings) -> SecretProvider:
@@ -118,6 +121,13 @@ def build_container(settings: Settings | None = None) -> Container:
         use_ssl=resolved_settings.object_store_use_ssl,
         request_timeout_seconds=resolved_settings.object_store_request_timeout_seconds,
     )
+    workflow_runner = TemporalWorkflowRunner(
+        target_host=f"{resolved_settings.temporal_host}:{resolved_settings.temporal_port}",
+        namespace=resolved_settings.temporal_namespace,
+        task_queue=resolved_settings.temporal_task_queue,
+        tls=resolved_settings.temporal_tls_enabled,
+        human_review_sla_seconds=resolved_settings.temporal_human_review_sla_seconds,
+    )
 
     container = Container(
         settings=resolved_settings,
@@ -130,6 +140,7 @@ def build_container(settings: Settings | None = None) -> Container:
         id_generator=id_generator,
         uow_factory=uow_factory,
         object_store=object_store,
+        workflow_runner=workflow_runner,
     )
 
     logger.info("container.build.complete")

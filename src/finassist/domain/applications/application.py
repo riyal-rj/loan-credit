@@ -36,6 +36,14 @@ class Application:
     version: int
     created_at: datetime
     updated_at: datetime
+    active_workflow_id: str | None = None
+    """The Temporal workflow ID currently orchestrating this application version, or `None` if
+    none is running (Phase 3). Deliberately plain bookkeeping, not state-machine-governed: it is
+    set once by whichever command starts a workflow (`submit`/resubmit) and cleared once the
+    workflow's terminal activity applies a decision -- see `finassist.infrastructure.temporal`.
+    Kept on the aggregate (rather than re-derived from `version`) because `version` keeps
+    incrementing as the *same* workflow execution drives the case through automated activities, so
+    it cannot be used to reconstruct the workflow ID a signal must be sent to."""
     _pending_events: list[DomainEvent] = field(default_factory=list, repr=False)
 
     @classmethod
@@ -98,6 +106,7 @@ class Application:
                 previous_status=previous_status,
                 new_status=new_status,
                 reason=reason,
+                version=self.version,
             )
         )
 
@@ -106,6 +115,17 @@ class Application:
 
     def cancel(self, *, reason: str, clock: Clock) -> None:
         self.transition_to(ApplicationStatus.CANCELLED, reason=reason, clock=clock)
+
+    def attach_workflow(self, workflow_id: str) -> None:
+        """Record that ``workflow_id`` is now the active Temporal workflow for this version.
+
+        Called by `submit`/resubmit command handlers immediately before commit, so the ID is
+        durable before the (best-effort, outside-the-transaction) call that actually starts it."""
+        self.active_workflow_id = workflow_id
+
+    def detach_workflow(self) -> None:
+        """Clear the active workflow ID once its execution has ended (a decision was applied)."""
+        self.active_workflow_id = None
 
     def pull_events(self) -> list[DomainEvent]:
         """Drain and return pending domain events. Call exactly once per unit of work, after the

@@ -7,16 +7,20 @@ matrix, phased plan, and Phase 0/1A acceptance criteria. Design decisions are re
 [docs/adr/](docs/adr/).
 
 **Status: Phase 0 (architecture baseline), Phase 1A (production foundation), Phase 1B (domain and
-persistence foundation), and Phase 2 (synthetic enterprise ecosystem) are implemented.** Everything
-else in the master instruction (Temporal workflows, document intelligence, policy/affordability
-engines, retrieval/agents, human review, full observability, security hardening,
-Kubernetes/GitOps) is scoped to later phases per the plan in the Phase 0 document — none of it is
-claimed as done. See [docs/architecture/phase-1b-completion.md](docs/architecture/phase-1b-completion.md)
-and [docs/architecture/phase-2-completion.md](docs/architecture/phase-2-completion.md) for what
-each phase added, the evidence it passed on, and the real bugs each one caught and fixed along the
-way (RLS silently bypassed for superusers, timezone-naive ORM columns, a non-deterministic
-generator, an object-store startup path that could crash-loop the API, botocore's default timeouts
-turning an unreachable dependency into an 80-second hang).
+persistence foundation), Phase 2 (synthetic enterprise ecosystem), and Phase 3 (durable workflow
+and intake) are implemented.** Everything else in the master instruction (document intelligence,
+policy/affordability engines, retrieval/agents, full human review, full observability, security
+hardening, Kubernetes/GitOps) is scoped to later phases per the plan in the Phase 0 document — none
+of it is claimed as done. See
+[docs/architecture/phase-1b-completion.md](docs/architecture/phase-1b-completion.md),
+[docs/architecture/phase-2-completion.md](docs/architecture/phase-2-completion.md), and
+[docs/architecture/phase-3-completion.md](docs/architecture/phase-3-completion.md) for what each
+phase added, the evidence it passed on, and the real bugs each one caught and fixed along the way
+(RLS silently bypassed for superusers, timezone-naive ORM columns, a non-deterministic generator,
+an object-store startup path that could crash-loop the API, botocore's default timeouts turning an
+unreachable dependency into an 80-second hang, an original Phase 3 design that tried to reach
+`DECLINED`/`NEEDS_MORE_INFORMATION` automatically and was rejected by the already-accepted state
+machine, a Temporal workflow-sandbox import-graph failure).
 
 ## What exists right now
 
@@ -55,6 +59,20 @@ turning an unreachable dependency into an 80-second hang).
   (`services/mock-*`, docs/adr/0010), and a real, tenant-isolated, versioned object-storage
   document lifecycle (`finassist.application.ports.object_store`,
   `finassist.infrastructure.object_store`, MinIO).
+- Durable case orchestration (`finassist.infrastructure.temporal`): an `ApplicationWorkflow`
+  driving intake validation, document-presence checking, and human-review escalation through
+  Temporal activities, signals (`submit_review_decision`), and a durable SLA timer -- every
+  automated stage escalates to a human rather than auto-declining/auto-requesting-more-information,
+  since the accepted state machine only allows those outcomes from human review
+  (docs/adr/0002, docs/adr/0011).
+- Real HTTP routes for the `applications` context for the first time
+  (`finassist.api.routes.applications`): create, submit, resubmit, document upload (into the
+  Phase-2 object store), case status, and an internal reviewer-decision endpoint that signals the
+  running workflow.
+- Kafka event streaming (`finassist.infrastructure.kafka`): an outbox relay that publishes
+  `integration.outbox_events` per tenant (RLS-respecting, never a superuser connection) to
+  `finassist.applications.events`, and a projection consumer that maintains `applications.
+  status_projection` with inbox-deduplicated redelivery handling.
 
 ## Quickstart (Windows PowerShell or POSIX shell)
 
@@ -73,21 +91,35 @@ Or via Compose (brings up Postgres + MinIO, runs the migration, then starts the 
 docker compose --profile core up --build
 ```
 
-Add the synthetic mock services (LOS/KYC/bureau/employer/core-banking) with the `full` profile:
+Add the synthetic mock services (LOS/KYC/bureau/employer/core-banking) with `synthetic-systems`,
+Temporal with `workflow`, and Kafka with `events` -- or bring up everything at once with `full`:
 
 ```bash
 docker compose --profile full up --build
 ```
 
+`core` alone still boots (liveness passes), but the worker's three background jobs (Temporal
+worker, outbox relay, projection consumer) each retry-with-backoff until Temporal/Kafka are
+actually reachable -- cases won't move past `SUBMITTED` without `workflow`/`events`/`full`
+(docs/adr/0011).
+
 Postgres is published on host port **5433** (not 5432) so it doesn't collide with a Postgres you
 may already be running locally; see `.env.example`. MinIO uses its own defaults (9000 API / 9001
-console) and the mock services listen on 9101-9105.
+console), the mock services listen on 9101-9105, Temporal's frontend is on **7233** (Web UI on
+**8233**), and Kafka's host-visible listener is on **9094**.
 
-Integration tests need Docker (they spin up disposable Postgres and MinIO containers via
-testcontainers):
+Integration tests need Docker (they spin up disposable Postgres, MinIO, and Kafka containers via
+testcontainers, plus a real local Temporal dev server the SDK manages itself):
 
 ```bash
 make test-integration   # or: make ci-full for the combined unit+integration+coverage gate
+```
+
+Temporal workflow tests (control-flow/replay, against `temporalio.testing.WorkflowEnvironment`'s
+time-skipping test server -- no Docker needed) run separately:
+
+```bash
+make test-workflow
 ```
 
 Contract tests for the mock services don't need Docker (they run the FastAPI apps in-process):
@@ -101,7 +133,8 @@ uv run pytest tests/contract
 See `docs/architecture/phase-0-assessment.md` §3/§5 for the full rationale. Top level:
 
 - `src/finassist/` — application code (domain, application, infrastructure, ai, api, security,
-  observability, bootstrap)
+  observability, bootstrap); `infrastructure/temporal` (workflow/activities/client/worker) and
+  `infrastructure/kafka` (outbox relay/projection consumer) are Phase 3
 - `apps/` — process entrypoints (api, worker, web)
 - `migrations/` — Alembic migrations (`versions/0001_initial_schema.py` is the Phase 1B schema)
 - `services/` — synthetic enterprise systems: `synthetic_data` (generator/scenario catalog),

@@ -39,7 +39,7 @@ def test_readiness_reports_all_registered_checks() -> None:
     body = response.json()
     assert response.status_code in (200, 503)
     check_names = {check["name"] for check in body["checks"]}
-    assert check_names == {"secret_provider", "postgres", "object_store"}
+    assert check_names == {"secret_provider", "postgres", "object_store", "workflow_runner"}
     assert any(check["name"] == "secret_provider" and check["healthy"] for check in body["checks"])
 
 
