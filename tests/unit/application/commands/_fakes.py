@@ -9,12 +9,24 @@ from __future__ import annotations
 import copy
 import hashlib
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from types import TracebackType
 
 from finassist.application.ports.applicant_repository import ApplicantRepository
 from finassist.application.ports.application_repository import ApplicationRepository
 from finassist.application.ports.document_repository import DocumentRepository, UploadedDocument
+from finassist.application.ports.external_verification import (
+    BureauClient,
+    CoreBankingClient,
+    CreditReport,
+    EmployerVerifier,
+    EmploymentVerificationResult,
+    KycVerificationResult,
+    KycVerifier,
+    TransactionHistory,
+)
+from finassist.application.ports.extraction_repository import ExtractionRepository, StoredFact
+from finassist.application.ports.file_safety import FileSafetyReport, FileSafetyScanner
 from finassist.application.ports.id_generator import IdGenerator
 from finassist.application.ports.object_store import ObjectMetadata, ObjectStore
 from finassist.application.ports.product_catalog import ProductCatalog
@@ -23,13 +35,19 @@ from finassist.application.ports.review_queue_repository import (
     ReviewQueueRepository,
 )
 from finassist.application.ports.unit_of_work import UnitOfWork, UnitOfWorkFactory
+from finassist.application.ports.verification_repository import (
+    ExternalResponseSnapshot,
+    VerificationRepository,
+)
 from finassist.application.ports.workflow_runner import WorkflowRunner
 from finassist.domain.applications.applicant import Applicant
 from finassist.domain.applications.application import Application
 from finassist.domain.applications.events import DomainEvent
 from finassist.domain.applications.exceptions import ConcurrencyConflictError
 from finassist.domain.applications.product import Product
+from finassist.domain.documents.document_fact import DocumentClassification, ExtractedFact
 from finassist.domain.shared.identifiers import ApplicantId, ApplicationId, ProductId, TenantId
+from finassist.domain.verification.contradiction import VerificationCheck
 
 
 @dataclass
@@ -42,6 +60,10 @@ class FakeBackingStore:
     products: dict[str, Product] = field(default_factory=dict)
     documents: list[UploadedDocument] = field(default_factory=list)
     review_queue_entries: dict[tuple[str, str], ReviewQueueEntry] = field(default_factory=dict)
+    extracted_facts: list[StoredFact] = field(default_factory=list)
+    verification_checks: dict[tuple[str, str], list[VerificationCheck]] = field(
+        default_factory=dict
+    )
     reserved_idempotency_keys: set[tuple[str, str, str]] = field(default_factory=set)
     recorded_events: list[DomainEvent] = field(default_factory=list)
 
@@ -108,11 +130,19 @@ class FakeDocumentRepository(DocumentRepository):
     async def count_for_application(
         self, *, tenant_id: TenantId, application_id: ApplicationId
     ) -> int:
-        return sum(
-            1
+        documents = await self.list_for_application(
+            tenant_id=tenant_id, application_id=application_id
+        )
+        return len(documents)
+
+    async def list_for_application(
+        self, *, tenant_id: TenantId, application_id: ApplicationId
+    ) -> list[UploadedDocument]:
+        return [
+            document
             for document in self._store.documents
             if document.tenant_id == tenant_id and document.application_id == application_id
-        )
+        ]
 
 
 class FakeReviewQueueRepository(ReviewQueueRepository):
@@ -155,6 +185,58 @@ class FakeReviewQueueRepository(ReviewQueueRepository):
         )
 
 
+class FakeExtractionRepository(ExtractionRepository):
+    def __init__(self, store: FakeBackingStore) -> None:
+        self._store = store
+
+    async def add_run(
+        self,
+        *,
+        run_id: str,
+        tenant_id: TenantId,
+        application_id: ApplicationId,
+        document_id: str,
+        classification: DocumentClassification,
+        facts: list[ExtractedFact],
+        fact_ids: list[str],
+        completed_at: datetime,
+    ) -> None:
+        for fact_id, fact in zip(fact_ids, facts, strict=True):
+            self._store.extracted_facts.append(
+                StoredFact(fact_id=fact_id, document_id=document_id, run_id=run_id, fact=fact)
+            )
+
+    async def get_facts_for_application(
+        self, *, tenant_id: TenantId, application_id: ApplicationId
+    ) -> list[StoredFact]:
+        return list(self._store.extracted_facts)
+
+
+class FakeVerificationRepository(VerificationRepository):
+    def __init__(self, store: FakeBackingStore) -> None:
+        self._store = store
+
+    async def add_run(
+        self,
+        *,
+        run_id: str,
+        tenant_id: TenantId,
+        application_id: ApplicationId,
+        checks: list[VerificationCheck],
+        check_ids: list[str],
+        snapshots: list[ExternalResponseSnapshot],
+        snapshot_ids: list[str],
+        completed_at: datetime,
+    ) -> None:
+        key = (str(tenant_id), str(application_id))
+        self._store.verification_checks.setdefault(key, []).extend(checks)
+
+    async def get_checks_for_application(
+        self, *, tenant_id: TenantId, application_id: ApplicationId
+    ) -> list[VerificationCheck]:
+        return list(self._store.verification_checks.get((str(tenant_id), str(application_id)), []))
+
+
 class FakeUnitOfWork(UnitOfWork):
     def __init__(self, store: FakeBackingStore, tenant_id: TenantId) -> None:
         self._store = store
@@ -164,6 +246,8 @@ class FakeUnitOfWork(UnitOfWork):
         self.products = FakeProductCatalog(store)
         self.documents = FakeDocumentRepository(store)
         self.review_queue = FakeReviewQueueRepository(store)
+        self.extraction = FakeExtractionRepository(store)
+        self.verification = FakeVerificationRepository(store)
         self.committed = False
 
     async def __aenter__(self) -> FakeUnitOfWork:
@@ -217,6 +301,7 @@ class FixedIdGenerator(IdGenerator):
 class FakeObjectStore(ObjectStore):
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], bytes] = {}
+        self._content_types: dict[tuple[str, str], str] = {}
 
     async def ensure_ready(self) -> None:
         return None
@@ -228,6 +313,7 @@ class FakeObjectStore(ObjectStore):
         self, *, tenant_id: TenantId, key: str, data: bytes, content_type: str
     ) -> ObjectMetadata:
         self.objects[(str(tenant_id), key)] = data
+        self._content_types[(str(tenant_id), key)] = content_type
         return ObjectMetadata(
             key=key,
             checksum_sha256=hashlib.sha256(data).hexdigest(),
@@ -242,11 +328,12 @@ class FakeObjectStore(ObjectStore):
 
     async def get_object_metadata(self, *, tenant_id: TenantId, key: str) -> ObjectMetadata:
         data = self.objects[(str(tenant_id), key)]
+        content_type = self._content_types.get((str(tenant_id), key), "application/octet-stream")
         return ObjectMetadata(
             key=key,
             checksum_sha256=hashlib.sha256(data).hexdigest(),
             size_bytes=len(data),
-            content_type="application/octet-stream",
+            content_type=content_type,
             version_id="1",
             uploaded_at=datetime.now(UTC),
         )
@@ -321,3 +408,82 @@ class FakeWorkflowRunner(WorkflowRunner):
                 workflow_id=workflow_id, decision=decision, reason=reason, reviewer_id=reviewer_id
             )
         )
+
+
+class FakeFileSafetyScanner(FileSafetyScanner):
+    def __init__(
+        self, *, detected_content_type: str = "application/pdf", page_count: int = 1
+    ) -> None:
+        self._report = FileSafetyReport(
+            detected_content_type=detected_content_type, page_count=page_count
+        )
+
+    async def scan(
+        self, *, data: bytes, filename: str, declared_content_type: str
+    ) -> FileSafetyReport:
+        return self._report
+
+
+class FakeKycVerifier(KycVerifier):
+    def __init__(self, result: KycVerificationResult) -> None:
+        self._result = result
+
+    async def check_connectivity(self) -> None:
+        return None
+
+    async def verify_identity(
+        self,
+        *,
+        given_name: str,
+        family_name: str,
+        date_of_birth: date,
+        synthetic_id: str,
+        street_address: str,
+        city: str,
+    ) -> KycVerificationResult:
+        return self._result
+
+
+class FakeEmployerVerifier(EmployerVerifier):
+    def __init__(self, result: EmploymentVerificationResult) -> None:
+        self._result = result
+
+    async def check_connectivity(self) -> None:
+        return None
+
+    async def verify_employment(
+        self,
+        *,
+        given_name: str,
+        family_name: str,
+        synthetic_id: str,
+        employer_name: str,
+        declared_annual_income: int,
+    ) -> EmploymentVerificationResult:
+        return self._result
+
+
+class FakeBureauClient(BureauClient):
+    def __init__(self, result: CreditReport) -> None:
+        self._result = result
+
+    async def check_connectivity(self) -> None:
+        return None
+
+    async def get_credit_report(
+        self, *, given_name: str, family_name: str, date_of_birth: date, synthetic_id: str
+    ) -> CreditReport:
+        return self._result
+
+
+class FakeCoreBankingClient(CoreBankingClient):
+    def __init__(self, result: TransactionHistory) -> None:
+        self._result = result
+
+    async def check_connectivity(self) -> None:
+        return None
+
+    async def get_transaction_history(
+        self, *, given_name: str, family_name: str, synthetic_id: str, declared_annual_income: int
+    ) -> TransactionHistory:
+        return self._result

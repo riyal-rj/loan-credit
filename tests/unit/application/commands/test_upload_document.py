@@ -14,7 +14,12 @@ from finassist.domain.applications.status import ApplicationStatus
 from finassist.domain.shared.clock import FixedClock
 from finassist.domain.shared.identifiers import ApplicationId, TenantId, new_id
 
-from ._fakes import FakeObjectStore, FakeUnitOfWorkFactory, FixedIdGenerator
+from ._fakes import (
+    FakeFileSafetyScanner,
+    FakeObjectStore,
+    FakeUnitOfWorkFactory,
+    FixedIdGenerator,
+)
 from ._helpers import NOW, make_product, seed_application_at
 
 
@@ -30,6 +35,7 @@ async def test_upload_stores_object_and_metadata_and_records_event() -> None:
     handler = UploadDocumentHandler(
         uow_factory=factory,
         object_store=object_store,
+        file_safety_scanner=FakeFileSafetyScanner(),
         id_generator=FixedIdGenerator(["doc-1"]),
         clock=FixedClock(NOW),
     )
@@ -61,6 +67,7 @@ async def test_unknown_application_raises() -> None:
     handler = UploadDocumentHandler(
         uow_factory=factory,
         object_store=FakeObjectStore(),
+        file_safety_scanner=FakeFileSafetyScanner(),
         id_generator=FixedIdGenerator(["doc-1"]),
         clock=FixedClock(NOW),
     )
@@ -90,6 +97,7 @@ async def test_retry_with_same_idempotency_key_raises_duplicate() -> None:
     handler = UploadDocumentHandler(
         uow_factory=factory,
         object_store=FakeObjectStore(),
+        file_safety_scanner=FakeFileSafetyScanner(),
         id_generator=FixedIdGenerator(["doc-1"]),
         clock=FixedClock(NOW),
     )

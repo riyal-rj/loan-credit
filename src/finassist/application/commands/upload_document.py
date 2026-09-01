@@ -1,12 +1,14 @@
 """`UploadDocumentCommand`: `POST /applications/{application_id}/documents`.
 
-Stores the file in the existing Phase-2 `ObjectStore`, records metadata (`applications.documents`)
-in the same transaction as the outbox event, per invariant §5.7 (no dual-write). The object write
-happens *inside* the transaction, after the idempotency key is reserved and before commit: if it
-fails, the whole transaction rolls back (including the reservation), so a client retry with the
-same idempotency key is safe. A successful object write followed by a transaction failure leaves
-an orphaned object in the (immutable, versioned) store -- an accepted, non-corrupting leak, not a
-correctness bug.
+Runs `FileSafetyScanner.scan` (Phase 4: extension/MIME-signature/size/page-count/encryption/
+malware checks, master instruction §15 "before processing") before anything is stored -- an unsafe
+file never reaches the object store or the database. Stores the file in the existing Phase-2
+`ObjectStore`, records metadata (`applications.documents`) in the same transaction as the outbox
+event, per invariant §5.7 (no dual-write). All of this happens *inside* the transaction, after the
+idempotency key is reserved and before commit: if any step fails, the whole transaction rolls back
+(including the reservation), so a client retry with the same idempotency key is safe. A successful
+object write followed by a transaction failure leaves an orphaned object in the (immutable,
+versioned) store -- an accepted, non-corrupting leak, not a correctness bug.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from finassist.application.ports.document_repository import UploadedDocument
+from finassist.application.ports.file_safety import FileSafetyScanner
 from finassist.application.ports.id_generator import IdGenerator
 from finassist.application.ports.object_store import ObjectStore
 from finassist.application.ports.unit_of_work import UnitOfWorkFactory
@@ -53,11 +56,13 @@ class UploadDocumentHandler:
         *,
         uow_factory: UnitOfWorkFactory,
         object_store: ObjectStore,
+        file_safety_scanner: FileSafetyScanner,
         id_generator: IdGenerator,
         clock: Clock,
     ) -> None:
         self._uow_factory = uow_factory
         self._object_store = object_store
+        self._file_safety_scanner = file_safety_scanner
         self._id_generator = id_generator
         self._clock = clock
 
@@ -75,13 +80,21 @@ class UploadDocumentHandler:
             if application is None:
                 raise ApplicationNotFoundError(str(command.application_id))
 
+            safety_report = await self._file_safety_scanner.scan(
+                data=command.data,
+                filename=command.filename,
+                declared_content_type=command.content_type,
+            )
+
             document_id = self._id_generator.new_id()
             object_key = f"applications/{command.application_id}/{document_id}/{command.filename}"
             metadata = await self._object_store.put_object(
                 tenant_id=command.tenant_id,
                 key=object_key,
                 data=command.data,
-                content_type=command.content_type,
+                # The scanner's detected type (from magic bytes), never the client-declared one --
+                # same "don't trust caller-supplied metadata" rule the scanner itself enforces.
+                content_type=safety_report.detected_content_type,
             )
 
             now = self._clock.now()

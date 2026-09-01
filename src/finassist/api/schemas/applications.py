@@ -69,3 +69,31 @@ class ReviewDecisionResponse(BaseModel):
     application_id: str
     workflow_id: str
     decision: str
+
+
+class ExtractedFactResponse(BaseModel):
+    fact_id: str
+    document_id: str
+    fact_type: str
+    value: str
+    normalized_value: str
+    confidence: float
+    page: int
+    extraction_method: str
+    extractor_version: str
+
+
+class VerificationCheckResponse(BaseModel):
+    source_system: str
+    checked_fact_type: str
+    declared_value: str | None
+    external_value: str | None
+    verdict: str
+    confidence: float
+    detail: str
+
+
+class ApplicationEvidenceResponse(BaseModel):
+    application_id: str
+    facts: list[ExtractedFactResponse]
+    verification_checks: list[VerificationCheckResponse]

@@ -31,16 +31,31 @@ from finassist.application.commands.submit_application import (
     SubmitApplicationCommand,
     SubmitApplicationHandler,
 )
+from finassist.application.ports.external_verification import (
+    CreditReport,
+    EmploymentVerificationResult,
+    KycVerificationResult,
+    TransactionHistory,
+)
 from finassist.application.ports.id_generator import UuidIdGenerator
 from finassist.bootstrap.settings import Settings
 from finassist.domain.applications.status import ApplicationStatus
 from finassist.domain.shared.clock import FixedClock, SystemClock
 from finassist.domain.shared.identifiers import ProductId, TenantId, new_id
 from finassist.domain.shared.money import Money
+from finassist.infrastructure.documents.pdf_parser import PyPdfDocumentParser
+from finassist.infrastructure.documents.regex_extractor import RegexDocumentExtractor
 from finassist.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from finassist.infrastructure.temporal.client import TemporalWorkflowRunner
 from finassist.infrastructure.temporal.worker import build_worker
 from finassist.infrastructure.temporal.workflows import ApplicationWorkflow
+from tests.unit.application.commands._fakes import (
+    FakeBureauClient,
+    FakeCoreBankingClient,
+    FakeEmployerVerifier,
+    FakeKycVerifier,
+    FakeObjectStore,
+)
 
 from .test_application_repository import _seed_tenant_and_product
 
@@ -78,7 +93,41 @@ async def test_golden_path_against_real_temporal_and_postgres(
     )
 
     settings = Settings(temporal_host="127.0.0.1", temporal_port=port)
-    worker = await build_worker(settings=settings, uow_factory=uow_factory, clock=SystemClock())
+    worker = await build_worker(
+        settings=settings,
+        uow_factory=uow_factory,
+        clock=SystemClock(),
+        id_generator=UuidIdGenerator(),
+        object_store=FakeObjectStore(),
+        document_parser=PyPdfDocumentParser(),
+        document_extractor=RegexDocumentExtractor(),
+        # This scenario never uploads a document (zero-doc path), so extraction/verification
+        # activities never run -- fakes are enough here; the real HTTP round trip against the
+        # mock services is covered by tests/integration/test_document_intelligence.py instead.
+        kyc_verifier=FakeKycVerifier(
+            KycVerificationResult(
+                status="PASS", name_match_score=1.0, address_match_score=1.0,
+                date_of_birth_match=True, reference_id="KYC-1",
+            )
+        ),
+        employer_verifier=FakeEmployerVerifier(
+            EmploymentVerificationResult(
+                is_employment_confirmed=True, verified_annual_income=60_000, tenure_months=24
+            )
+        ),
+        bureau_client=FakeBureauClient(
+            CreditReport(
+                credit_score=700, tradelines=[], hard_inquiries_last_12_months=0,
+                is_duplicate_identity_flag=False,
+            )
+        ),
+        core_banking_client=FakeCoreBankingClient(
+            TransactionHistory(
+                average_daily_balance_cents=50_000, nsf_count_last_90_days=0,
+                recent_transactions=[],
+            )
+        ),
+    )
     worker_task = asyncio.create_task(worker.run())
 
     workflow_runner = TemporalWorkflowRunner(

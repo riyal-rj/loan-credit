@@ -22,6 +22,9 @@ from finassist.domain.shared.identifiers import TenantId
 from finassist.infrastructure.postgres.audit_hash import GENESIS_HASH, compute_audit_hash
 from finassist.infrastructure.postgres.document_repository import SqlAlchemyDocumentRepository
 from finassist.infrastructure.postgres.event_mapping import event_to_record
+from finassist.infrastructure.postgres.extraction_repository import (
+    SqlAlchemyExtractionRepository,
+)
 from finassist.infrastructure.postgres.orm_models import (
     AuditEventRow,
     AuditHashRow,
@@ -35,6 +38,9 @@ from finassist.infrastructure.postgres.repository import (
 )
 from finassist.infrastructure.postgres.review_queue_repository import (
     SqlAlchemyReviewQueueRepository,
+)
+from finassist.infrastructure.postgres.verification_repository import (
+    SqlAlchemyVerificationRepository,
 )
 
 _SCHEMA_VERSION = 1
@@ -76,6 +82,10 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         self.products = SqlAlchemyProductCatalog(self._session)
         self.documents = SqlAlchemyDocumentRepository(self._session)
         self.review_queue = SqlAlchemyReviewQueueRepository(self._session)
+        self.extraction = SqlAlchemyExtractionRepository(self._session)
+        self.verification = SqlAlchemyVerificationRepository(
+            self._session, self._id_generator.new_id
+        )
         return self
 
     async def __aexit__(

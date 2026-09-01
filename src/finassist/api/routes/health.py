@@ -61,11 +61,31 @@ async def _check_workflow_runner(container: Container) -> None:
     await container.workflow_runner.check_connectivity()
 
 
+async def _check_mock_kyc(container: Container) -> None:
+    await container.kyc_verifier.check_connectivity()
+
+
+async def _check_mock_bureau(container: Container) -> None:
+    await container.bureau_client.check_connectivity()
+
+
+async def _check_mock_employer(container: Container) -> None:
+    await container.employer_verifier.check_connectivity()
+
+
+async def _check_mock_core_banking(container: Container) -> None:
+    await container.core_banking_client.check_connectivity()
+
+
 READINESS_CHECKS: list[ReadinessCheck] = [
     ReadinessCheck(name="secret_provider", check=_check_secret_provider),
     ReadinessCheck(name="postgres", check=_check_postgres),
     ReadinessCheck(name="object_store", check=_check_object_store),
     ReadinessCheck(name="workflow_runner", check=_check_workflow_runner),
+    ReadinessCheck(name="mock_kyc", check=_check_mock_kyc),
+    ReadinessCheck(name="mock_bureau", check=_check_mock_bureau),
+    ReadinessCheck(name="mock_employer", check=_check_mock_employer),
+    ReadinessCheck(name="mock_core_banking", check=_check_mock_core_banking),
 ]
 
 

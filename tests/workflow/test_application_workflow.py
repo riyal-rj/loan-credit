@@ -4,10 +4,11 @@ replay", "signal, retries, versioning" tests).
 Uses `temporalio.testing.WorkflowEnvironment`'s time-skipping test server -- a real (but
 ephemeral, in-process) Temporal server, so this exercises the actual workflow determinism/replay
 machinery, not a hand-rolled simulation. `ApplicationActivities` runs for real against a
-`FakeUnitOfWorkFactory` (the same in-memory fake the command-handler unit tests use), so this
-layer tests the *workflow's control flow* -- which activity runs when, what a signal/timeout does
--- while application-layer correctness is already covered by
-`tests/unit/application/commands/test_advance_*.py`.
+`FakeUnitOfWorkFactory` and fake object-store/external-verification adapters (the same fakes the
+command-handler unit tests use), so this layer tests the *workflow's control flow* -- which
+activity runs when, what a signal/timeout does -- while application-layer correctness is already
+covered by `tests/unit/application/commands/test_advance_*.py`/`test_process_document.py`/
+`test_verify_application_facts.py`.
 """
 
 from __future__ import annotations
@@ -18,23 +19,60 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from services.synthetic_data.applicants import generate_applicant
+from services.synthetic_data.documents import generate_pay_stub_pdf
+from services.synthetic_data.employer import generate_employment_record
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
 from finassist.application.ports.document_repository import UploadedDocument
+from finassist.application.ports.external_verification import (
+    CreditReport,
+    EmploymentVerificationResult,
+    KycVerificationResult,
+    TransactionHistory,
+)
+from finassist.application.ports.id_generator import UuidIdGenerator
 from finassist.domain.applications.status import ApplicationStatus
 from finassist.domain.shared.clock import SystemClock
 from finassist.domain.shared.identifiers import ApplicationId, TenantId, new_id
+from finassist.infrastructure.documents.pdf_parser import PyPdfDocumentParser
+from finassist.infrastructure.documents.regex_extractor import RegexDocumentExtractor
 from finassist.infrastructure.temporal.activities import ApplicationActivities
 from finassist.infrastructure.temporal.workflows import (
     ApplicationWorkflow,
     ApplicationWorkflowInput,
     ReviewDecisionSignal,
 )
-from tests.unit.application.commands._fakes import FakeUnitOfWorkFactory
+from tests.unit.application.commands._fakes import (
+    FakeBureauClient,
+    FakeCoreBankingClient,
+    FakeEmployerVerifier,
+    FakeKycVerifier,
+    FakeObjectStore,
+    FakeUnitOfWorkFactory,
+)
 from tests.unit.application.commands._helpers import make_product, seed_application_at
 
 _SHORT_SLA_SECONDS = 30.0
+
+_MATCHED_KYC_RESULT = KycVerificationResult(
+    status="PASS",
+    name_match_score=0.99,
+    address_match_score=0.98,
+    date_of_birth_match=True,
+    reference_id="KYC-1",
+)
+_MATCHED_EMPLOYMENT_RESULT = EmploymentVerificationResult(
+    is_employment_confirmed=True, verified_annual_income=60_000, tenure_months=24
+)
+_EMPTY_CREDIT_REPORT = CreditReport(
+    credit_score=700, tradelines=[], hard_inquiries_last_12_months=0,
+    is_duplicate_identity_flag=False,
+)
+_EMPTY_TRANSACTION_HISTORY = TransactionHistory(
+    average_daily_balance_cents=50_000, nsf_count_last_90_days=0, recent_transactions=[]
+)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -54,8 +92,20 @@ async def _run_workflow(
     factory: FakeUnitOfWorkFactory,
     signal: ReviewDecisionSignal | None,
     sla_seconds: float = _SHORT_SLA_SECONDS,
+    object_store: FakeObjectStore | None = None,
 ) -> ApplicationStatus:
-    activities = ApplicationActivities(uow_factory=factory, clock=SystemClock())
+    activities = ApplicationActivities(
+        uow_factory=factory,
+        clock=SystemClock(),
+        id_generator=UuidIdGenerator(),
+        object_store=object_store or FakeObjectStore(),
+        document_parser=PyPdfDocumentParser(),
+        document_extractor=RegexDocumentExtractor(),
+        kyc_verifier=FakeKycVerifier(_MATCHED_KYC_RESULT),
+        employer_verifier=FakeEmployerVerifier(_MATCHED_EMPLOYMENT_RESULT),
+        bureau_client=FakeBureauClient(_EMPTY_CREDIT_REPORT),
+        core_banking_client=FakeCoreBankingClient(_EMPTY_TRANSACTION_HISTORY),
+    )
     task_queue = f"tq-{uuid4()}"
     workflow_id = f"application:{tenant_id}:{application_id}:v{version}"
 
@@ -66,6 +116,9 @@ async def _run_workflow(
         activities=[
             activities.validate_intake_activity,
             activities.check_required_documents_activity,
+            activities.extract_document_facts_activity,
+            activities.verify_facts_activity,
+            activities.enter_human_review_activity,
             activities.apply_review_decision_activity,
         ],
     ):
@@ -97,17 +150,26 @@ async def test_golden_path_reaches_human_review_then_approved(
     application_id = await seed_application_at(
         factory, tenant_id=tenant_id, product=product, status=ApplicationStatus.SUBMITTED
     )
-    # Upload happens out-of-band of the workflow in real usage (via the API); here we just seed
-    # the document repository the same way a prior upload would have.
+    # Upload happens out-of-band of the workflow in real usage (via the API); here we seed a real
+    # synthetic pay stub -- extract_document_facts_activity actually parses it.
+    object_store = FakeObjectStore()
+    applicant = generate_applicant("NORMAL_ELIGIBLE", 0)
+    employment = generate_employment_record(applicant, "NORMAL_ELIGIBLE", 0)
+    pdf_bytes = generate_pay_stub_pdf(applicant, employment)
+    document_id = new_id()
+    object_key = f"applications/{application_id}/{document_id}/paystub.pdf"
+    await object_store.put_object(
+        tenant_id=tenant_id, key=object_key, data=pdf_bytes, content_type="application/pdf"
+    )
     factory.store.documents.append(
         UploadedDocument(
-            document_id=new_id(),
+            document_id=document_id,
             tenant_id=tenant_id,
             application_id=application_id,
             document_type="income_proof",
-            object_key="applications/x/y/z.pdf",
-            checksum_sha256="deadbeef",
-            size_bytes=10,
+            object_key=object_key,
+            checksum_sha256="irrelevant-for-this-test",
+            size_bytes=len(pdf_bytes),
             uploaded_at=datetime.now(UTC),
         )
     )
@@ -119,6 +181,7 @@ async def test_golden_path_reaches_human_review_then_approved(
         application_id=application_id,
         version=2,
         factory=factory,
+        object_store=object_store,
         signal=ReviewDecisionSignal(
             decision=ApplicationStatus.APPROVED.value, reason="looks good", reviewer_id="rev-1"
         ),
@@ -127,6 +190,9 @@ async def test_golden_path_reaches_human_review_then_approved(
     assert final_status is ApplicationStatus.APPROVED
     entry = factory.store.review_queue_entries[(str(tenant_id), str(application_id))]
     assert entry.decision == "APPROVED"
+    assert len(factory.store.extracted_facts) > 0
+    checks = factory.store.verification_checks[(str(tenant_id), str(application_id))]
+    assert any(c.source_system.value == "MOCK_EMPLOYER" for c in checks)
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -235,18 +301,6 @@ async def test_sla_timeout_auto_escalates(time_skipping_env: WorkflowEnvironment
     factory = FakeUnitOfWorkFactory(products=[product])
     application_id = await seed_application_at(
         factory, tenant_id=tenant_id, product=product, status=ApplicationStatus.SUBMITTED
-    )
-    factory.store.documents.append(
-        UploadedDocument(
-            document_id=new_id(),
-            tenant_id=tenant_id,
-            application_id=application_id,
-            document_type="income_proof",
-            object_key="applications/x/y/z.pdf",
-            checksum_sha256="deadbeef",
-            size_bytes=10,
-            uploaded_at=datetime.now(UTC),
-        )
     )
 
     final_status = await _run_workflow(

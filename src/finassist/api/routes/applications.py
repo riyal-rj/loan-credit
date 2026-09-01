@@ -13,14 +13,17 @@ from fastapi import APIRouter, Depends, File, Form, Header, UploadFile, status
 
 from finassist.api.dependencies.tenant import get_tenant_id
 from finassist.api.schemas.applications import (
+    ApplicationEvidenceResponse,
     ApplicationStatusResponse,
     CreateApplicationRequest,
     CreateApplicationResponse,
+    ExtractedFactResponse,
     ResubmitApplicationResponse,
     ReviewDecisionRequest,
     ReviewDecisionResponse,
     SubmitApplicationResponse,
     UploadDocumentResponse,
+    VerificationCheckResponse,
 )
 from finassist.application.commands.create_application import (
     CreateApplicationCommand,
@@ -37,6 +40,10 @@ from finassist.application.commands.submit_application import (
 from finassist.application.commands.upload_document import (
     UploadDocumentCommand,
     UploadDocumentHandler,
+)
+from finassist.application.queries.get_application_evidence import (
+    GetApplicationEvidenceHandler,
+    GetApplicationEvidenceQuery,
 )
 from finassist.application.queries.get_application_status import (
     GetApplicationStatusHandler,
@@ -167,6 +174,7 @@ def build_applications_router(container: Container) -> APIRouter:
         handler = UploadDocumentHandler(
             uow_factory=container.uow_factory,
             object_store=container.object_store,
+            file_safety_scanner=container.file_safety_scanner,
             id_generator=container.id_generator,
             clock=container.clock,
         )
@@ -203,6 +211,48 @@ def build_applications_router(container: Container) -> APIRouter:
             status=result.status.value,
             version=result.version,
             active_workflow_id=result.active_workflow_id,
+        )
+
+    @router.get(
+        "/applications/{application_id}/evidence", response_model=ApplicationEvidenceResponse
+    )
+    async def get_application_evidence(
+        application_id: str, tenant_id: TenantId = Depends(get_tenant_id)
+    ) -> ApplicationEvidenceResponse:
+        handler = GetApplicationEvidenceHandler(uow_factory=container.uow_factory)
+        result = await handler.handle(
+            GetApplicationEvidenceQuery(
+                tenant_id=tenant_id, application_id=ApplicationId(application_id)
+            )
+        )
+        return ApplicationEvidenceResponse(
+            application_id=str(result.application_id),
+            facts=[
+                ExtractedFactResponse(
+                    fact_id=stored.fact_id,
+                    document_id=stored.document_id,
+                    fact_type=stored.fact.fact_type.value,
+                    value=stored.fact.value,
+                    normalized_value=stored.fact.normalized_value,
+                    confidence=stored.fact.confidence,
+                    page=stored.fact.page,
+                    extraction_method=stored.fact.extraction_method,
+                    extractor_version=stored.fact.extractor_version,
+                )
+                for stored in result.facts
+            ],
+            verification_checks=[
+                VerificationCheckResponse(
+                    source_system=check.source_system.value,
+                    checked_fact_type=check.checked_fact_type,
+                    declared_value=check.declared_value,
+                    external_value=check.external_value,
+                    verdict=check.verdict.value,
+                    confidence=check.confidence,
+                    detail=check.detail,
+                )
+                for check in result.verification_checks
+            ],
         )
 
     @router.post(

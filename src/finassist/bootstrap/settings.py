@@ -137,6 +137,23 @@ class Settings(BaseSettings):
     kafka_outbox_relay_batch_size: int = Field(default=100, ge=1)
     kafka_projection_consumer_group: str = "applications-projection"
 
+    # Document intelligence (Phase 4, docs/adr/0012): real, non-stub limits enforced by
+    # `StubFileSafetyScanner` before any upload is parsed.
+    document_max_size_bytes: int = Field(default=10 * 1024 * 1024, ge=1024)
+    document_max_pages: int = Field(default=20, ge=1)
+    document_request_timeout_seconds: float = Field(default=5.0, gt=0)
+    """Timeout for every mock KYC/bureau/employer/core-banking call below -- explicit, never a
+    library default (the same lesson `object_store_request_timeout_seconds`, ADR-0010 decision 7,
+    already paid for once)."""
+
+    # Local-dev-only defaults matching compose.yaml's synthetic mock services (Phase 2, ports
+    # 9101-9105). These are synthetic test/demo systems (docs/adr/0010), not credentials, so they
+    # carry no production-safety validator clause the way secrets/TLS settings above do.
+    mock_kyc_base_url: str = "http://localhost:9101"
+    mock_bureau_base_url: str = "http://localhost:9102"
+    mock_employer_base_url: str = "http://localhost:9103"
+    mock_core_banking_base_url: str = "http://localhost:9104"
+
     @model_validator(mode="after")
     def _validate_production_constraints(self) -> Settings:
         """Fail fast on configuration that is acceptable in dev but unsafe in production.

@@ -7,13 +7,15 @@ from finassist.bootstrap.settings import Settings
 
 
 def _client(**overrides: object) -> TestClient:
-    # object_store_request_timeout_seconds is tiny here purely for test speed: no live MinIO in a
-    # unit-test run, so every object-store call is expected to fail, and the production default
-    # (5s, a reasonable value for a real network call) would make this file slow.
+    # object_store_request_timeout_seconds/document_request_timeout_seconds are tiny here purely
+    # for test speed: no live MinIO/mock services in a unit-test run, so every such call is
+    # expected to fail, and the production defaults (5s, reasonable for a real network call) would
+    # make this file slow.
     settings = Settings(
         environment="local",
         log_format="console",
         object_store_request_timeout_seconds=0.1,
+        document_request_timeout_seconds=0.1,
         **overrides,  # type: ignore[arg-type]
     )
     app = create_app(settings)
@@ -39,7 +41,16 @@ def test_readiness_reports_all_registered_checks() -> None:
     body = response.json()
     assert response.status_code in (200, 503)
     check_names = {check["name"] for check in body["checks"]}
-    assert check_names == {"secret_provider", "postgres", "object_store", "workflow_runner"}
+    assert check_names == {
+        "secret_provider",
+        "postgres",
+        "object_store",
+        "workflow_runner",
+        "mock_kyc",
+        "mock_bureau",
+        "mock_employer",
+        "mock_core_banking",
+    }
     assert any(check["name"] == "secret_provider" and check["healthy"] for check in body["checks"])
 
 

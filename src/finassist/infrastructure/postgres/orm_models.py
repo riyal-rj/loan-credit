@@ -11,7 +11,8 @@ Only tables with an active read/write code path are ORM-mapped here. `identity.t
 ORM class yet -- consent capture is still not scheduled to a phase; mapping it now would be
 exactly the "code with no caller" premature abstraction the coding standards warn against.
 `integration.inbox_messages` *is* now mapped (Phase 3): `KafkaProjectionConsumer` is its first
-real caller (docs/adr/0011).
+real caller (docs/adr/0011). `documents.fact_candidates`/`documents.document_checksums` (Phase 4)
+are the same "schema-only, no ORM class yet" situation as `consent_records` -- see docs/adr/0012.
 """
 
 from __future__ import annotations
@@ -253,3 +254,108 @@ class StatusProjectionRow(Base):
     status: Mapped[str]
     version: Mapped[int]
     updated_at: Mapped[datetime]
+
+
+class ExtractionRunRow(Base):
+    __tablename__ = "extraction_runs"
+    __table_args__ = {"schema": "documents"}
+
+    run_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    document_id: Mapped[str] = mapped_column(ForeignKey("applications.documents.document_id"))
+    classification: Mapped[str]
+    fact_count: Mapped[int]
+    completed_at: Mapped[datetime]
+
+
+class ExtractedFactRow(Base):
+    __tablename__ = "extracted_facts"
+    __table_args__ = {"schema": "documents"}
+
+    fact_id: Mapped[str] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("documents.extraction_runs.run_id"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    document_id: Mapped[str] = mapped_column(ForeignKey("applications.documents.document_id"))
+    fact_type: Mapped[str]
+    value: Mapped[str]
+    normalized_value: Mapped[str]
+    confidence: Mapped[float]
+    page: Mapped[int]
+    extraction_method: Mapped[str]
+    extractor_version: Mapped[str]
+    source_checksum: Mapped[str]
+    status: Mapped[str]
+    created_at: Mapped[datetime]
+
+
+class VerificationRunRow(Base):
+    __tablename__ = "verification_runs"
+    __table_args__ = {"schema": "verification"}
+
+    run_id: Mapped[str] = mapped_column(primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    check_count: Mapped[int]
+    contradiction_count: Mapped[int]
+    completed_at: Mapped[datetime]
+
+
+class VerificationCheckRow(Base):
+    __tablename__ = "verification_checks"
+    __table_args__ = {"schema": "verification"}
+
+    check_id: Mapped[str] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("verification.verification_runs.run_id"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    source_system: Mapped[str]
+    checked_fact_type: Mapped[str]
+    declared_value: Mapped[str | None]
+    external_value: Mapped[str | None]
+    verdict: Mapped[str]
+    confidence: Mapped[float]
+    detail: Mapped[str]
+    created_at: Mapped[datetime]
+
+
+class ContradictionRow(Base):
+    __tablename__ = "contradictions"
+    __table_args__ = {"schema": "verification"}
+
+    contradiction_id: Mapped[str] = mapped_column(primary_key=True)
+    check_id: Mapped[str] = mapped_column(
+        ForeignKey("verification.verification_checks.check_id"), unique=True
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    source_system: Mapped[str]
+    checked_fact_type: Mapped[str]
+    detail: Mapped[str]
+    created_at: Mapped[datetime]
+
+
+class ExternalResponseSnapshotRow(Base):
+    __tablename__ = "external_response_snapshots"
+    __table_args__ = {"schema": "verification"}
+
+    snapshot_id: Mapped[str] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("verification.verification_runs.run_id"))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("identity.tenants.tenant_id"), index=True)
+    application_id: Mapped[str] = mapped_column(
+        ForeignKey("applications.applications.application_id"), index=True
+    )
+    source_system: Mapped[str]
+    response_payload: Mapped[dict[str, object]] = mapped_column(JSONB)
+    captured_at: Mapped[datetime]

@@ -7,20 +7,23 @@ matrix, phased plan, and Phase 0/1A acceptance criteria. Design decisions are re
 [docs/adr/](docs/adr/).
 
 **Status: Phase 0 (architecture baseline), Phase 1A (production foundation), Phase 1B (domain and
-persistence foundation), Phase 2 (synthetic enterprise ecosystem), and Phase 3 (durable workflow
-and intake) are implemented.** Everything else in the master instruction (document intelligence,
-policy/affordability engines, retrieval/agents, full human review, full observability, security
-hardening, Kubernetes/GitOps) is scoped to later phases per the plan in the Phase 0 document — none
-of it is claimed as done. See
+persistence foundation), Phase 2 (synthetic enterprise ecosystem), Phase 3 (durable workflow and
+intake), and Phase 4 (document intelligence and verification) are implemented.** Everything else in
+the master instruction (policy/affordability engines, retrieval/agents, full human review, full
+observability, security hardening, Kubernetes/GitOps) is scoped to later phases per the plan in the
+Phase 0 document — none of it is claimed as done. See
 [docs/architecture/phase-1b-completion.md](docs/architecture/phase-1b-completion.md),
-[docs/architecture/phase-2-completion.md](docs/architecture/phase-2-completion.md), and
-[docs/architecture/phase-3-completion.md](docs/architecture/phase-3-completion.md) for what each
+[docs/architecture/phase-2-completion.md](docs/architecture/phase-2-completion.md),
+[docs/architecture/phase-3-completion.md](docs/architecture/phase-3-completion.md), and
+[docs/architecture/phase-4-completion.md](docs/architecture/phase-4-completion.md) for what each
 phase added, the evidence it passed on, and the real bugs each one caught and fixed along the way
 (RLS silently bypassed for superusers, timezone-naive ORM columns, a non-deterministic generator,
 an object-store startup path that could crash-loop the API, botocore's default timeouts turning an
 unreachable dependency into an 80-second hang, an original Phase 3 design that tried to reach
 `DECLINED`/`NEEDS_MORE_INFORMATION` automatically and was rejected by the already-accepted state
-machine, a Temporal workflow-sandbox import-graph failure).
+machine, a Temporal workflow-sandbox import-graph failure, 37 CVEs in the originally pinned `pypdf`
+version, an Alembic revision ID that silently truncated past its 32-character column limit, and a
+SQLAlchemy/asyncpg insert-batching order bug that violated a real foreign key on real Postgres).
 
 ## What exists right now
 
@@ -73,6 +76,14 @@ machine, a Temporal workflow-sandbox import-graph failure).
   `integration.outbox_events` per tenant (RLS-respecting, never a superuser connection) to
   `finassist.applications.events`, and a projection consumer that maintains `applications.
   status_projection` with inbox-deduplicated redelivery handling.
+- Document intelligence and verification (`finassist.domain.documents`,
+  `finassist.domain.verification`, `finassist.infrastructure.documents`,
+  `finassist.infrastructure.external_systems`): file-safety scanning, real PDF text extraction
+  (`pypdf`), deterministic fact extraction with full provenance against the Phase 2 synthetic
+  document corpus, and cross-source verification against the mock KYC/bureau/employer/
+  core-banking services over real HTTP -- wired into `ApplicationWorkflow` between the
+  document-presence check and human-review escalation, and exposed via `GET
+  /applications/{id}/evidence` (docs/adr/0012).
 
 ## Quickstart (Windows PowerShell or POSIX shell)
 

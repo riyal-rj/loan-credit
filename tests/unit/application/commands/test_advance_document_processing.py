@@ -18,7 +18,7 @@ from ._helpers import NOW, make_product, seed_application_at
 
 
 @pytest.mark.asyncio
-async def test_at_least_one_document_reaches_human_review_via_verification() -> None:
+async def test_at_least_one_document_stops_at_verification() -> None:
     tenant_id = TenantId(new_id())
     product = make_product()
     factory = FakeUnitOfWorkFactory(products=[product])
@@ -46,9 +46,11 @@ async def test_at_least_one_document_reaches_human_review_via_verification() -> 
     )
 
     assert result.document_count == 1
-    assert result.status is ApplicationStatus.AWAITING_HUMAN_REVIEW
-    entry = factory.store.review_queue_entries[(str(tenant_id), str(application_id))]
-    assert entry.status == "pending"
+    # Stops at VERIFICATION -- Phase 4's extraction/verification activities run next, then
+    # `enter_human_review_activity` escalates with a real reason (docs/adr/0012). This handler no
+    # longer escalates on its own for the has-docs branch.
+    assert result.status is ApplicationStatus.VERIFICATION
+    assert (str(tenant_id), str(application_id)) not in factory.store.review_queue_entries
 
 
 @pytest.mark.asyncio

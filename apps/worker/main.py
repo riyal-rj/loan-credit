@@ -27,11 +27,9 @@ import uvicorn
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from finassist.application.ports.unit_of_work import UnitOfWorkFactory
-from finassist.bootstrap.container import build_container, shutdown_container
+from finassist.bootstrap.container import Container, build_container, shutdown_container
 from finassist.bootstrap.logging import get_logger
 from finassist.bootstrap.settings import Settings, get_settings
-from finassist.domain.shared.clock import Clock
 from finassist.infrastructure.kafka.outbox_relay import relay_once
 from finassist.infrastructure.kafka.producer import KafkaEventProducer
 from finassist.infrastructure.kafka.projection_consumer import run_projection_consumer
@@ -74,13 +72,21 @@ async def _run_with_retry(
 
 
 async def _run_temporal_worker(
-    stop_event: asyncio.Event,
-    *,
-    settings: Settings,
-    uow_factory: UnitOfWorkFactory,
-    clock: Clock,
+    stop_event: asyncio.Event, *, settings: Settings, container: Container
 ) -> None:
-    worker = await build_worker(settings=settings, uow_factory=uow_factory, clock=clock)
+    worker = await build_worker(
+        settings=settings,
+        uow_factory=container.uow_factory,
+        clock=container.clock,
+        id_generator=container.id_generator,
+        object_store=container.object_store,
+        document_parser=container.document_parser,
+        document_extractor=container.document_extractor,
+        kyc_verifier=container.kyc_verifier,
+        employer_verifier=container.employer_verifier,
+        bureau_client=container.bureau_client,
+        core_banking_client=container.core_banking_client,
+    )
     run_task = asyncio.create_task(worker.run())
     await stop_event.wait()
     await worker.shutdown()
@@ -164,12 +170,7 @@ async def main() -> None:
         _run_with_retry(
             "temporal_worker",
             stop_event,
-            lambda: _run_temporal_worker(
-                stop_event,
-                settings=settings,
-                uow_factory=container.uow_factory,
-                clock=container.clock,
-            ),
+            lambda: _run_temporal_worker(stop_event, settings=settings, container=container),
         )
     )
     outbox_relay_task = asyncio.create_task(

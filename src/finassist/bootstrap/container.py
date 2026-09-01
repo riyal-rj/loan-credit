@@ -15,6 +15,15 @@ import aioboto3
 from opentelemetry.sdk.trace import TracerProvider
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from finassist.application.ports.document_extractor import DocumentExtractor
+from finassist.application.ports.document_parser import DocumentParser
+from finassist.application.ports.external_verification import (
+    BureauClient,
+    CoreBankingClient,
+    EmployerVerifier,
+    KycVerifier,
+)
+from finassist.application.ports.file_safety import FileSafetyScanner
 from finassist.application.ports.id_generator import IdGenerator, UuidIdGenerator
 from finassist.application.ports.object_store import ObjectStore
 from finassist.application.ports.unit_of_work import UnitOfWorkFactory
@@ -23,6 +32,13 @@ from finassist.bootstrap.logging import configure_logging, get_logger
 from finassist.bootstrap.settings import Environment, SecretProviderKind, Settings, get_settings
 from finassist.bootstrap.telemetry import configure_telemetry, shutdown_telemetry
 from finassist.domain.shared.clock import Clock, SystemClock
+from finassist.infrastructure.documents.file_safety_scanner import StubFileSafetyScanner
+from finassist.infrastructure.documents.pdf_parser import PyPdfDocumentParser
+from finassist.infrastructure.documents.regex_extractor import RegexDocumentExtractor
+from finassist.infrastructure.external_systems.bureau_client import HttpBureauClient
+from finassist.infrastructure.external_systems.core_banking_client import HttpCoreBankingClient
+from finassist.infrastructure.external_systems.employer_client import HttpEmployerVerifier
+from finassist.infrastructure.external_systems.kyc_client import HttpKycVerifier
 from finassist.infrastructure.object_store.minio_client import S3ObjectStore
 from finassist.infrastructure.postgres.database import build_engine, build_session_factory
 from finassist.infrastructure.postgres.unit_of_work import SqlAlchemyUnitOfWorkFactory
@@ -56,6 +72,13 @@ class Container:
     uow_factory: UnitOfWorkFactory
     object_store: ObjectStore
     workflow_runner: WorkflowRunner
+    file_safety_scanner: FileSafetyScanner
+    document_parser: DocumentParser
+    document_extractor: DocumentExtractor
+    kyc_verifier: KycVerifier
+    employer_verifier: EmployerVerifier
+    bureau_client: BureauClient
+    core_banking_client: CoreBankingClient
 
 
 def _build_secret_provider(settings: Settings) -> SecretProvider:
@@ -128,6 +151,28 @@ def build_container(settings: Settings | None = None) -> Container:
         tls=resolved_settings.temporal_tls_enabled,
         human_review_sla_seconds=resolved_settings.temporal_human_review_sla_seconds,
     )
+    file_safety_scanner = StubFileSafetyScanner(
+        max_size_bytes=resolved_settings.document_max_size_bytes,
+        max_pages=resolved_settings.document_max_pages,
+    )
+    document_parser = PyPdfDocumentParser()
+    document_extractor = RegexDocumentExtractor()
+    kyc_verifier = HttpKycVerifier(
+        base_url=resolved_settings.mock_kyc_base_url,
+        request_timeout_seconds=resolved_settings.document_request_timeout_seconds,
+    )
+    employer_verifier = HttpEmployerVerifier(
+        base_url=resolved_settings.mock_employer_base_url,
+        request_timeout_seconds=resolved_settings.document_request_timeout_seconds,
+    )
+    bureau_client = HttpBureauClient(
+        base_url=resolved_settings.mock_bureau_base_url,
+        request_timeout_seconds=resolved_settings.document_request_timeout_seconds,
+    )
+    core_banking_client = HttpCoreBankingClient(
+        base_url=resolved_settings.mock_core_banking_base_url,
+        request_timeout_seconds=resolved_settings.document_request_timeout_seconds,
+    )
 
     container = Container(
         settings=resolved_settings,
@@ -141,6 +186,13 @@ def build_container(settings: Settings | None = None) -> Container:
         uow_factory=uow_factory,
         object_store=object_store,
         workflow_runner=workflow_runner,
+        file_safety_scanner=file_safety_scanner,
+        document_parser=document_parser,
+        document_extractor=document_extractor,
+        kyc_verifier=kyc_verifier,
+        employer_verifier=employer_verifier,
+        bureau_client=bureau_client,
+        core_banking_client=core_banking_client,
     )
 
     logger.info("container.build.complete")

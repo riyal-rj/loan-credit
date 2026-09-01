@@ -19,14 +19,17 @@ Two entry points share one workflow definition:
   was already validated by the *prior* (closed) workflow execution, so this one starts directly at
   the document-presence check.
 
-Both `validate_intake_activity` and `check_required_documents_activity` always end at
-`AWAITING_HUMAN_REVIEW`: the real state machine (Phase 1B, exhaustively property-tested) only
+`validate_intake_activity` always ends either at `DOCUMENT_PROCESSING` or escalates straight to
+`AWAITING_HUMAN_REVIEW`; the real state machine (Phase 1B, exhaustively property-tested) only
 allows `DECLINED`/`NEEDS_MORE_INFORMATION` to be reached *from* human review, never automatically,
-which is master instruction invariant §5.1 holding at the transition-legality level. So there is no
-"declined"/"needs more info" early-exit branch here to begin with -- every path converges on
-waiting for a human decision, with the *reason* the case reached review (out-of-bounds request, no
-documents, or the every-case Phase 5/6-not-implemented-yet escalation) recorded on the
-`AWAITING_HUMAN_REVIEW` transition itself (docs/adr/0011).
+which is master instruction invariant §5.1 holding at the transition-legality level. `check_
+required_documents_activity` either escalates directly too (zero documents) or stops at
+`VERIFICATION` -- at which point Phase 4's `extract_document_facts_activity` and
+`verify_facts_activity` run (real document intelligence and cross-source verification against the
+Phase 2 mock KYC/bureau/employer/core-banking services), and `enter_human_review_activity`
+escalates with a reason citing the real verification outcome instead of a placeholder string
+(docs/adr/0012). Every path still converges on waiting for a human decision -- there remains no
+automated path to `DECLINED`/`APPROVED`/`NEEDS_MORE_INFORMATION` anywhere in this workflow.
 """
 
 from __future__ import annotations
@@ -43,10 +46,15 @@ with workflow.unsafe.imports_passed_through():
 from finassist.infrastructure.temporal.activity_io import (
     APPLY_REVIEW_DECISION_ACTIVITY,
     CHECK_REQUIRED_DOCUMENTS_ACTIVITY,
+    ENTER_HUMAN_REVIEW_ACTIVITY,
+    EXTRACT_DOCUMENT_FACTS_ACTIVITY,
     VALIDATE_INTAKE_ACTIVITY,
+    VERIFY_FACTS_ACTIVITY,
     ActivityContext,
     ActivityStatusResult,
     ApplyReviewDecisionActivityInput,
+    EnterHumanReviewActivityInput,
+    VerifyFactsActivityResult,
 )
 
 _ACTIVITY_START_TO_CLOSE_TIMEOUT = timedelta(seconds=30)
@@ -123,11 +131,39 @@ class ApplicationWorkflow:
             )
 
         if not reached_human_review:
-            # check_required_documents_activity always ends at AWAITING_HUMAN_REVIEW itself (with
-            # or without an intermediate VERIFICATION hop) -- see its module docstring.
-            await workflow.execute_activity(
+            document_result = await workflow.execute_activity(
                 CHECK_REQUIRED_DOCUMENTS_ACTIVITY,
                 ctx,
+                result_type=ActivityStatusResult,
+                start_to_close_timeout=_ACTIVITY_START_TO_CLOSE_TIMEOUT,
+                retry_policy=_ACTIVITY_RETRY_POLICY,
+            )
+            if document_result.status == ApplicationStatus.AWAITING_HUMAN_REVIEW.value:
+                reached_human_review = True  # zero documents -- already escalated
+
+        if not reached_human_review:
+            # At least one document was present (status is VERIFICATION): run real document
+            # intelligence and cross-source verification before escalating, per docs/adr/0012.
+            await workflow.execute_activity(
+                EXTRACT_DOCUMENT_FACTS_ACTIVITY,
+                ctx,
+                start_to_close_timeout=_ACTIVITY_START_TO_CLOSE_TIMEOUT,
+                retry_policy=_ACTIVITY_RETRY_POLICY,
+            )
+            verify_result: VerifyFactsActivityResult = await workflow.execute_activity(
+                VERIFY_FACTS_ACTIVITY,
+                ctx,
+                result_type=VerifyFactsActivityResult,
+                start_to_close_timeout=_ACTIVITY_START_TO_CLOSE_TIMEOUT,
+                retry_policy=_ACTIVITY_RETRY_POLICY,
+            )
+            await workflow.execute_activity(
+                ENTER_HUMAN_REVIEW_ACTIVITY,
+                EnterHumanReviewActivityInput(
+                    tenant_id=workflow_input.tenant_id,
+                    application_id=workflow_input.application_id,
+                    reason=verify_result.summary,
+                ),
                 result_type=ActivityStatusResult,
                 start_to_close_timeout=_ACTIVITY_START_TO_CLOSE_TIMEOUT,
                 retry_policy=_ACTIVITY_RETRY_POLICY,

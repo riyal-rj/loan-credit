@@ -1,12 +1,12 @@
 """`AdvanceDocumentProcessingCommand`: invoked by `check_required_documents_activity`.
 
-Always ends at `AWAITING_HUMAN_REVIEW` (docs/adr/0011: no automated policy/affordability/fraud/
-risk engine exists yet -- Phase 5/6 -- so every application that reaches this point needs a
-human). At least one uploaded document: `DOCUMENT_PROCESSING -> VERIFICATION` (its own save) `->
-AWAITING_HUMAN_REVIEW` via `enter_human_review`. Zero documents: escalates directly with a reason
+At least one uploaded document: `DOCUMENT_PROCESSING -> VERIFICATION` only -- stops there (Phase 4:
+`extract_document_facts_activity`/`verify_facts_activity` run next, then
+`enter_human_review_activity` escalates with a reason citing the real verification outcome; see
+`finassist.infrastructure.temporal.workflows`). Zero documents: escalates directly with a reason
 explaining why -- there is no automated `NEEDS_MORE_INFORMATION` path (see
 `_enter_human_review.py`'s docstring); a human reviewer decides that outcome from
-`AWAITING_HUMAN_REVIEW`.
+`AWAITING_HUMAN_REVIEW`, and there is nothing to extract/verify without a document anyway.
 """
 
 from __future__ import annotations
@@ -72,15 +72,6 @@ class AdvanceDocumentProcessingHandler:
                     clock=self._clock,
                 )
                 await uow.applications.save(application)
-                await enter_human_review(
-                    uow=uow,
-                    application=application,
-                    reason=(
-                        "no automated verification/policy/affordability/fraud/risk engine "
-                        "exists yet (Phase 4/5/6); routing to human review"
-                    ),
-                    clock=self._clock,
-                )
             else:
                 await enter_human_review(
                     uow=uow,

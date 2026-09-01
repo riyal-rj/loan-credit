@@ -4,8 +4,9 @@ test file doesn't re-implement the same setup."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
+from finassist.domain.applications.applicant import Applicant
 from finassist.domain.applications.application import Application
 from finassist.domain.applications.product import Product
 from finassist.domain.applications.status import ApplicationStatus
@@ -47,15 +48,26 @@ async def seed_application_at(
     product: Product,
     status: ApplicationStatus,
     requested_amount: str = "5000.00",
+    applicant_given_name: str = "Ada",
+    applicant_family_name: str = "Lovelace",
+    applicant_date_of_birth: date = date(1990, 1, 1),
 ) -> ApplicationId:
-    """Creates an `Application` and drives it (via direct `transition_to` calls, not through a
-    command handler) to ``status``, then persists it. Only follows a real path through the state
-    machine, so an unreachable target status raises the same `IllegalStateTransitionError` a real
-    bug would."""
+    """Creates an `Applicant` + `Application` and drives the latter (via direct `transition_to`
+    calls, not through a command handler) to ``status``, then persists both. Only follows a real
+    path through the state machine, so an unreachable target status raises the same
+    `IllegalStateTransitionError` a real bug would."""
+    applicant = Applicant(
+        applicant_id=ApplicantId(_uuid()),
+        tenant_id=tenant_id,
+        given_name=applicant_given_name,
+        family_name=applicant_family_name,
+        date_of_birth=applicant_date_of_birth,
+        email=f"{applicant_given_name.lower()}@example.test",
+    )
     application = Application.create(
         application_id=ApplicationId(_uuid()),
         tenant_id=tenant_id,
-        applicant_id=ApplicantId(_uuid()),
+        applicant_id=applicant.applicant_id,
         product=product,
         requested_amount=Money.of(requested_amount, "USD"),
         requested_term_months=24,
@@ -102,6 +114,7 @@ async def seed_application_at(
     application.pull_events()
 
     async with factory.begin(tenant_id=tenant_id) as uow:
+        await uow.applicants.add(applicant)
         await uow.applications.add(application)
         await uow.commit()
     return application.application_id

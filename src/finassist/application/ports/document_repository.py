@@ -2,9 +2,8 @@
 
 `UploadedDocument` is a port-local value type, not a `finassist.domain` aggregate -- the same
 choice `object_store.py` makes for `ObjectMetadata`. Real document intelligence (pages,
-extraction, provenance, `finassist.domain.documents`) is Phase 4 scope; this record only proves
-"a file was uploaded and stored for this application," which is all `check_required_documents_
-activity` (Phase 3's workflow) needs to know.
+extraction, provenance, `finassist.domain.documents`) is Phase 4 scope, consuming
+`list_for_application` to process every uploaded document for a case.
 """
 
 from __future__ import annotations
@@ -37,4 +36,11 @@ class DocumentRepository(Protocol):
     ) -> int:
         """Count of documents uploaded for this application. Used by the workflow's
         document-presence gate, not as a substitute for Phase 4's real document classification."""
+        ...
+
+    async def list_for_application(
+        self, *, tenant_id: TenantId, application_id: ApplicationId
+    ) -> list[UploadedDocument]:
+        """Every document uploaded for this application, in upload order. Used by Phase 4's
+        `process_document` activity to process each one."""
         ...

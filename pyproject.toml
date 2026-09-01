@@ -25,6 +25,8 @@ dependencies = [
     "temporalio>=1.8,<2.0",
     "aiokafka>=0.11,<0.13",
     "python-multipart>=0.0.18,<0.1",
+    "pypdf>=6.16,<7.0",
+    "httpx>=0.27,<0.29",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +36,6 @@ dev = [
     "pytest>=9.0.3,<10.0",
     "pytest-asyncio>=1.0,<2.0",
     "pytest-cov>=6.0,<7.0",
-    "httpx>=0.27,<0.29",
     "bandit>=1.7,<2.0",
     "pip-audit>=2.7,<3.0",
     "import-linter>=2.1,<3.0",
@@ -129,6 +130,8 @@ forbidden_modules = [
     "kafka",
     "aiokafka",
     "temporalio",
+    "httpx",
+    "pypdf",
     "langgraph",
     "langfuse",
     "finassist.infrastructure",
@@ -146,6 +149,8 @@ forbidden_modules = [
     "kafka",
     "aiokafka",
     "temporalio",
+    "httpx",
+    "pypdf",
     "finassist.infrastructure",
     "finassist.api",
 ]

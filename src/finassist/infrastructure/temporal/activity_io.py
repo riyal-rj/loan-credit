@@ -18,6 +18,9 @@ from dataclasses import dataclass
 
 VALIDATE_INTAKE_ACTIVITY = "validate_intake_activity"
 CHECK_REQUIRED_DOCUMENTS_ACTIVITY = "check_required_documents_activity"
+EXTRACT_DOCUMENT_FACTS_ACTIVITY = "extract_document_facts_activity"
+VERIFY_FACTS_ACTIVITY = "verify_facts_activity"
+ENTER_HUMAN_REVIEW_ACTIVITY = "enter_human_review_activity"
 APPLY_REVIEW_DECISION_ACTIVITY = "apply_review_decision_activity"
 """Registered activity names -- the single source of truth `activities.py`'s `@activity.defn(name=
 ...)` decorators and `workflows.py`'s `workflow.execute_activity(<name>, ...)` calls both use, so
@@ -48,3 +51,22 @@ class ApplyReviewDecisionActivityInput:
     decision: str
     reason: str
     reviewer_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractDocumentFactsActivityResult:
+    document_count: int
+    fact_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class VerifyFactsActivityResult:
+    contradiction_count: int
+    summary: str
+
+
+@dataclass(frozen=True, slots=True)
+class EnterHumanReviewActivityInput:
+    tenant_id: str
+    application_id: str
+    reason: str
